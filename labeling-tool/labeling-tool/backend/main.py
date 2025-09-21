@@ -134,9 +134,10 @@ def get_session(
         page.extend(extras[: (limit - len(page))])
 
     return {
-        "queryImage": f"/images/{query_rel}",
-        "images": [f"/images/{p}" for p in page],
+        "queryImage": f"/images/{query_rel}",   # relative URL for query image
+        "images": [f"/images/{p}" for p in page],   # relative URLs for candidate images
     }
+
 
 @app.post("/api/labels/save")
 def save_labels(body: SaveLabelsBody):
