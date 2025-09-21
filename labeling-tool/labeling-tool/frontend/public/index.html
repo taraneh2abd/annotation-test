@@ -110,22 +110,26 @@
       return d;
     }
 
-    async function fetchSession() {
-      setStatus('Loading batch...');
-      selected.clear();
-      grid.innerHTML = '';
-      try {
-        const res = await fetch(API + '/api/session');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-        queryImg.src = data.queryImage;
-        data.images.forEach(u => grid.appendChild(card(u)));
-        setStatus('Batch loaded. Select matches and click Save.');
-      } catch (err) {
-        console.error(err);
-        setStatus('Failed to load: ' + err.message);
-      }
-    }
+async function fetchSession() {
+  setStatus('Loading batch...');
+  selected.clear();
+  grid.innerHTML = '';
+  try {
+    const res = await fetch(API + '/api/session');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+
+    // Correctly set the query image
+    queryImg.src = `${API}${data.queryImage}`;  // Use `data.queryImage` from the backend response
+
+    data.images.forEach(u => grid.appendChild(card(u)));
+    setStatus('Batch loaded. Select matches and click Save.');
+  } catch (err) {
+    console.error(err);
+    setStatus('Failed to load: ' + err.message);
+  }
+}
+
 
     async function saveSelections() {
       const positives = [];

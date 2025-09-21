@@ -118,7 +118,8 @@ def get_session(
     if not IMAGE_LIST:
         raise HTTPException(status_code=404, detail=f"No images found in {IMAGE_ROOT}")
     rng = random.Random(seed if seed is not None else time.time_ns())
-    query_rel = rng.choice(IMAGE_LIST)
+    # query_rel = rng.choice(IMAGE_LIST)
+    query_rel = "img_72.png"
 
     # page window with wrap-around
     start = offset % len(IMAGE_LIST)
