@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simple Image Labeling Tool</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px; background: #111827; position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px; }
+    h1 { font-size: 20px; margin: 0; }
+    .container { padding: 16px 24px; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    button { background: #1f2937; color: #e5e7eb; border: 1px solid #334155; padding: 8px 12px; border-radius: 10px; cursor: pointer; }
+    button:hover { background: #374151; }
+    .status { opacity: 0.8; font-size: 14px; }
+    .query { margin: 16px 0; }
+    .query img { max-height: 240px; border-radius: 12px; display: block; border: 1px solid #334155; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+    .card { position: relative; border-radius: 12px; overflow: hidden; background: #0b1220; border: 1px solid #334155; }
+    .card img { width: 100%; height: 140px; object-fit: cover; display: block; }
+    .badge { position: absolute; top: 6px; left: 6px; padding: 2px 6px; border-radius: 999px; font-size: 12px; background: #111827; border: 1px solid #334155; }
+    .pos { box-shadow: 0 0 0 3px #10b981 inset; }
+    .neg { box-shadow: 0 0 0 3px #ef4444 inset; }
+    .hint { font-size: 13px; opacity: .8; }
+    footer { padding: 16px 24px; opacity: 0.7; font-size: 13px; }
+    a { color: #93c5fd; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Image Labeling Tool</h1>
+    <div class="status" id="status"></div>
+  </header>
+  <div class="container">
+    <div class="toolbar">
+      <button id="newBatch">New Batch</button>
+      <button id="save">Save Selections</button>
+      <span class="hint">left-click = positive (green), right-click = negative (red), click again to clear</span>
+    </div>
+
+    <section class="query">
+      <h3>Query Image</h3>
+      <img id="queryImg" alt="Query" />
+    </section>
+
+    <section>
+      <h3>Candidates</h3>
+      <div class="grid" id="grid"></div>
+    </section>
+  </div>
+  <footer class="container">
+    Backend API: <code id="apiBase"></code> — Images served directly by backend at <code>/images/*</code>
+  </footer>
+
+  <script>
+    const API = window.API_BASE_URL || 'http://localhost:8000';  // Default to localhost:8000 for backend
+
+    // const API = (window.API_BASE_URL || '').trim() || (location.origin.replace(':8080', ':8000'));
+    document.getElementById('apiBase').textContent = API;
+    const grid = document.getElementById('grid');
+    const queryImg = document.getElementById('queryImg');
+    const status = document.getElementById('status');
+    const selected = new Map(); // url -> 'pos' | 'neg'
+
+    function setStatus(msg) { status.textContent = msg || ''; }
+
+    function card(url) {
+      const d = document.createElement('div');
+      d.className = 'card';
+      const img = document.createElement('img');
+      img.src = `${API}${url}`;
+      // img.src = url;
+      img.draggable = false;
+      d.appendChild(img);
+      const badge = document.createElement('div');
+      badge.className = 'badge';
+      badge.textContent = '—';
+      d.appendChild(badge);
+
+      function applyState() {
+        d.classList.remove('pos', 'neg');
+        const s = selected.get(url);
+        if (s === 'pos') { d.classList.add('pos'); badge.textContent = 'positive'; }
+        else if (s === 'neg') { d.classList.add('neg'); badge.textContent = 'negative'; }
+        else { badge.textContent = '—'; }
+      }
+      applyState();
+
+      d.addEventListener('click', (e) => {
+        e.preventDefault();
+        const cur = selected.get(url);
+        if (cur === 'pos') selected.delete(url);
+        else selected.set(url, 'pos');
+        applyState();
+      });
+
+      d.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const cur = selected.get(url);
+        if (cur === 'neg') selected.delete(url);
+        else selected.set(url, 'neg');
+        applyState();
+        return false;
+      });
+
+      return d;
+    }
+
+    async function fetchSession() {
+      setStatus('Loading batch...');
+      selected.clear();
+      grid.innerHTML = '';
+      try {
+        const res = await fetch(API + '/api/session');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        queryImg.src = data.queryImage;
+        data.images.forEach(u => grid.appendChild(card(u)));
+        setStatus('Batch loaded. Select matches and click Save.');
+      } catch (err) {
+        console.error(err);
+        setStatus('Failed to load: ' + err.message);
+      }
+    }
+
+    async function saveSelections() {
+      const positives = [];
+      const negatives = [];
+      for (const [url, state] of selected.entries()) {
+        if (state === 'pos') positives.push(url);
+        if (state === 'neg') negatives.push(url);
+      }
+      const body = {
+        queryImage: queryImg.src,
+        positives, negatives,
+      };
+      setStatus('Saving...');
+      try {
+        const res = await fetch(API + '/api/labels/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        setStatus('Saved ✓ — ' + (data.ok ? 'ok' : 'not ok'));
+      } catch (err) {
+        console.error(err);
+        setStatus('Save failed: ' + err.message);
+      }
+    }
+
+    document.getElementById('newBatch').addEventListener('click', fetchSession);
+    document.getElementById('save').addEventListener('click', saveSelections);
+
+    // initial
+    fetchSession();
+  </script>
+</body>
+</html>
