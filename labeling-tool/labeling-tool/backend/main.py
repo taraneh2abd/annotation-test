@@ -48,7 +48,8 @@ labels_col = db[MONGO_COLLECTION]
 
 def ensure_indexes():
     try:
-        labels_col.create_index([("query_image", ASCENDING), ("ts", ASCENDING)])
+        labels_col.create_index([("query_image", ASCENDING)], unique=True)
+        labels_col.create_index([("ts", ASCENDING)])
     except PyMongoError as e:
         print(f"[warn] failed to create index: {e}")
 
@@ -101,7 +102,14 @@ BATCHES = [
         "queryImage": "/images/img_77.png",
         "images": ["/images/img_78.png", "/images/img_79.png"]
     },
-    # add more batches here
+    {
+        "queryImage": "/images/img_73.png",
+        "images": ["/images/img_73.png", "/images/img_74.png", "/images/img_75.png", "/images/img_76.png","/images/img_73.png", "/images/img_84.png", "/images/img_85.png", "/images/img_80.png"]
+    },
+    {
+        "queryImage": "/images/img_82.png",
+        "images": ["/images/img_83.png", "/images/img_84.png", "/images/img_80.png", "/images/img_85.png"]
+    },
 ]
 
 # ---------------- Endpoints ----------------
@@ -138,19 +146,24 @@ def get_session(
         "images": [f"/images/{p}" for p in page],
     }
 
+# ---------------- Labels save with upsert ----------------
 @app.post("/api/labels/save")
 def save_labels(body: SaveLabelsBody):
     if not ping_mongo():
         raise HTTPException(status_code=503, detail="MongoDB not reachable")
     doc = {
-        "query_image": body.queryImage,
         "positives": body.positives,
         "negatives": body.negatives,
         "ts": int(time.time()),
     }
     try:
-        labels_col.insert_one(doc)
-        return {"ok": True, "saved": 1}
+        # Upsert: find by query_image, update if exists, insert if not
+        result = labels_col.update_one(
+            {"query_image": body.queryImage},
+            {"$set": doc},
+            upsert=True
+        )
+        return {"ok": True, "matched": result.matched_count, "modified": result.modified_count}
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
