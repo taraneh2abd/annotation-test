@@ -1,16 +1,18 @@
 import os
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
-from fastapi import FastAPI, HTTPException, Query, Path as PathParam
+from fastapi import FastAPI, HTTPException, Query, Path as PathParam, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pymongo import MongoClient, ASCENDING
 from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
+import jwt
+from jwt import PyJWTError
 
-# ---------------- Env ----------------
+# ---------------- Environment ----------------
 MONGO_HOST = os.getenv("MONGO_HOST", "mongo")
 MONGO_PORT = int(os.getenv("MONGO_PORT", "27017"))
 MONGO_USER = os.getenv("MONGO_INITDB_ROOT_USERNAME", "root")
@@ -19,8 +21,8 @@ MONGO_DB = os.getenv("MONGO_DB", "labeldb")
 MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "labels")
 IMAGE_ROOT = os.getenv("IMAGE_ROOT", "/data/images")
 PAGE_SIZE_DEFAULT = int(os.getenv("PAGE_SIZE", "20"))
-BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecret123")  # for JWT
+ALGORITHM = "HS256"
 
 MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASS}@{MONGO_HOST}:{MONGO_PORT}/"
 
@@ -28,10 +30,9 @@ MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASS}@{MONGO_HOST}:{MONGO_PORT}/"
 app = FastAPI(title="Image Labeling API")
 
 # ---------------- CORS ----------------
-allow_origins = ["*"] if CORS_ORIGINS == "*" else [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,9 +43,13 @@ Path(IMAGE_ROOT).mkdir(parents=True, exist_ok=True)
 app.mount("/images", StaticFiles(directory=IMAGE_ROOT), name="images")
 
 # ---------------- Database ----------------
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
-db = client[MONGO_DB]
-labels_col = db[MONGO_COLLECTION]
+try:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+    db = client[MONGO_DB]
+    labels_col = db[MONGO_COLLECTION]
+except Exception as e:
+    print(f"[error] MongoDB connection failed: {e}")
+    raise e
 
 def ensure_indexes():
     try:
@@ -62,6 +67,8 @@ def ping_mongo() -> bool:
     except Exception:
         return False
 
+ensure_indexes()
+
 # ---------------- Image scan ----------------
 def scan_images(root: str) -> List[str]:
     exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -76,7 +83,6 @@ def scan_images(root: str) -> List[str]:
 IMAGE_LIST: List[str] = scan_images(IMAGE_ROOT)
 print(f"[startup] images found: {len(IMAGE_LIST)} in {IMAGE_ROOT}")
 print(f"[startup] mongo reachable: {ping_mongo()} (host={MONGO_HOST}:{MONGO_PORT})")
-ensure_indexes()
 
 # ---------------- Schemas ----------------
 class SessionResponse(BaseModel):
@@ -88,7 +94,70 @@ class SaveLabelsBody(BaseModel):
     positives: List[str] = []
     negatives: List[str] = []
 
-# ---------------- Batches ----------------
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+# ---------------- JWT Authentication ----------------
+def verify_token(authorization: str = Header(...)):
+    try:
+        scheme, token = authorization.split()
+        if scheme.lower() != "bearer":
+            raise HTTPException(status_code=401, detail="Invalid auth scheme")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except (ValueError, PyJWTError):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+# ---------------- Login Endpoint ----------------
+@app.post("/api/login", response_model=LoginResponse)
+def login(req: LoginRequest):
+    if req.username == "user" and req.password == "1234":
+        token = jwt.encode({"sub": req.username, "exp": time.time() + 3600}, SECRET_KEY, algorithm=ALGORITHM)
+        return {"access_token": token, "token_type": "bearer"}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+# ---------------- Health & Refresh ----------------
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "images": len(IMAGE_LIST), "mongo": ping_mongo(), "image_root": IMAGE_ROOT}
+
+@app.post("/api/refresh")
+def refresh():
+    global IMAGE_LIST
+    IMAGE_LIST = scan_images(IMAGE_ROOT)
+    return {"ok": True, "count": len(IMAGE_LIST)}
+
+# ---------------- Session Endpoint ----------------
+@app.get("/api/session", response_model=SessionResponse)
+def get_session(offset: int = Query(0, ge=0), limit: int = Query(PAGE_SIZE_DEFAULT, ge=1, le=200), user=Depends(verify_token)):
+    if not IMAGE_LIST:
+        raise HTTPException(status_code=404, detail=f"No images found in {IMAGE_ROOT}")
+    query_rel = IMAGE_LIST[offset % len(IMAGE_LIST)]
+    start = (offset + 1) % len(IMAGE_LIST)
+    page = IMAGE_LIST[start:start + limit]
+    if len(page) < limit and len(IMAGE_LIST) > 0:
+        page += IMAGE_LIST[0:limit - len(page)]
+    page = [p for p in page if p != query_rel]
+    return {"queryImage": f"/images/{query_rel}", "images": [f"/images/{p}" for p in page]}
+
+# ---------------- Labels save with upsert ----------------
+@app.post("/api/labels/save")
+def save_labels(body: SaveLabelsBody, user=Depends(verify_token)):
+    if not ping_mongo():
+        raise HTTPException(status_code=503, detail="MongoDB not reachable")
+    doc = {"positives": body.positives, "negatives": body.negatives, "ts": int(time.time())}
+    try:
+        result = labels_col.update_one({"query_image": body.queryImage}, {"$set": doc}, upsert=True)
+        return {"ok": True, "matched": result.matched_count, "modified": result.modified_count}
+    except PyMongoError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------- Batch APIs ----------------
 BATCHES = [
     {
         "queryImage": "/images/img_69.png",
@@ -116,69 +185,12 @@ BATCHES = [
     },
 ]
 
-# ---------------- Endpoints ----------------
-@app.get("/api/health")
-def health():
-    return {
-        "status": "ok",
-        "images": len(IMAGE_LIST),
-        "mongo": ping_mongo(),
-        "image_root": IMAGE_ROOT,
-    }
-
-@app.post("/api/refresh")
-def refresh():
-    global IMAGE_LIST
-    IMAGE_LIST = scan_images(IMAGE_ROOT)
-    return {"ok": True, "count": len(IMAGE_LIST)}
-
-@app.get("/api/session", response_model=SessionResponse)
-def get_session(
-    offset: int = Query(0, ge=0),
-    limit: int = Query(PAGE_SIZE_DEFAULT, ge=1, le=200),
-):
-    if not IMAGE_LIST:
-        raise HTTPException(status_code=404, detail=f"No images found in {IMAGE_ROOT}")
-    query_rel = IMAGE_LIST[offset % len(IMAGE_LIST)]
-    start = (offset + 1) % len(IMAGE_LIST)
-    page = IMAGE_LIST[start:start + limit]
-    if len(page) < limit and len(IMAGE_LIST) > 0:
-        page += IMAGE_LIST[0:limit - len(page)]
-    page = [p for p in page if p != query_rel]
-    return {
-        "queryImage": f"/images/{query_rel}",
-        "images": [f"/images/{p}" for p in page],
-    }
-
-# ---------------- Labels save with upsert ----------------
-@app.post("/api/labels/save")
-def save_labels(body: SaveLabelsBody):
-    if not ping_mongo():
-        raise HTTPException(status_code=503, detail="MongoDB not reachable")
-    doc = {
-        "positives": body.positives,
-        "negatives": body.negatives,
-        "ts": int(time.time()),
-    }
-    try:
-        # Upsert: find by query_image, update if exists, insert if not
-        result = labels_col.update_one(
-            {"query_image": body.queryImage},
-            {"$set": doc},
-            upsert=True
-        )
-        return {"ok": True, "matched": result.matched_count, "modified": result.modified_count}
-    except PyMongoError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ---------------- Batch APIs ----------------
-@app.get("/api/batch/{index}", response_model=SessionResponse, tags=["Batches"])
-def get_batch(index: int = PathParam(..., ge=0, description="Batch index")):
+@app.get("/api/batch/{index}", response_model=SessionResponse)
+def get_batch(index: int = PathParam(..., ge=0), user=Depends(verify_token)):
     if index >= len(BATCHES):
         raise HTTPException(status_code=404, detail="Batch index out of range")
     return BATCHES[index]
 
-@app.get("/api/batches/count", tags=["Batches"])
-def get_batches_count():
-    """Return total number of batches"""
+@app.get("/api/batches/count")
+def get_batches_count(user=Depends(verify_token)):
     return {"total": len(BATCHES)}

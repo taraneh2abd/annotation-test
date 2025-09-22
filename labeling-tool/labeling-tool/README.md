@@ -7,6 +7,9 @@ One command brings up the whole stack (MongoDB, Mongo Express, Backend API, and 
 1. Put your images (jpg, jpeg, png, gif, webp, bmp) into the local `images/` folder (create it next to `docker-compose.yml`). Subfolders are supported.
 2. In this directory, run:
 
+name =user 
+password =1234
+
 ```bash
 docker login
 
@@ -80,4 +83,3 @@ PAGE_SIZE=20
 └─ images/               # <-- put your images here
 ```
 
-Enjoy!
