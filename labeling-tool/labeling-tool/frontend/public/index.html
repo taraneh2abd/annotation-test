@@ -31,9 +31,35 @@ a { color: #93c5fd; }
 
 .layout { display: flex; gap: 20px; }
 .left-panel { flex: 1; display: flex; flex-direction: column; gap: 16px; align-items: center; }
-.right-panel { flex: 3; }
+.right-panel { flex: 5; }
 .controls { display: flex; gap: 10px; align-items: center; }
-.batch-nav { display: flex; gap: 10px; align-items: center; }
+.batch-nav {
+  display: flex;
+  flex-direction: column;  /* دکمه‌ها و متن زیر هم */
+  align-items: center;     /* وسط افقی */
+  gap: 6px;
+}
+
+.batch-nav .controls-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;               /* فاصله بین prev, counter, next */
+}
+
+.batch-nav .hints {
+  font-size: 13px;
+  color: #cbd5e1;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.batch-nav button {
+  padding: 6px 10px;
+  font-weight: bold;
+}
+
+
+
 </style>
 </head>
 <body>
@@ -52,15 +78,23 @@ a { color: #93c5fd; }
       </section>
 
       <!-- Batch nav moved here -->
-      <div class="batch-nav">
-        <button id="prevBatch">&lt;</button>
-        <span id="batchCounter">0 / 0</span>
-        <button id="nextBatch">&gt;</button>
-      </div>
+<div class="batch-nav">
+  <div class="controls-row">
+    <button id="prevBatch">&lt;</button>
+    <span id="batchCounter">0 / 0</span>
+    <button id="nextBatch">&gt;</button>
+  </div>
+  <div class="hints">
+    <p><strong>Ctrl → Ctrl ←</strong> will save automatically</p>
+    <p><strong>Left click:</strong> positive, <strong>Right click:</strong> negative</p>
+  </div>
+</div>
 
-      <div class="controls">
-        <button id="save">Save Selections</button>
-      </div>
+
+<div class="controls">
+  <button id="save">Save Selections</button>
+</div>
+
     </div>
 
     <!-- Right side -->
@@ -79,7 +113,7 @@ Backend API: <code id="apiBase"></code> — Images served directly by backend at
 
 <script>
 const API = 'http://localhost:8000';  
-document.getElementById('apiBase').textContent = API;
+// document.getElementById('apiBase').textContent = API;
 
 const grid = document.getElementById('grid');
 const queryImg = document.getElementById('queryImg');
@@ -161,7 +195,7 @@ async function fetchBatch(batch) {
       if (saved.positives?.includes(imgUrl)) selected.set(idx, 'pos');
       if (saved.negatives?.includes(imgUrl)) selected.set(idx, 'neg');
     });
-    setStatus('Batch loaded. Select matches and click Save or ctrl+ -> to go next batch.');
+    setStatus('Batch loaded. Select matches and click Save or ctrl+ ->');
     currentIndex = 0;
     updateFocusAndState();
   } catch (err) {
