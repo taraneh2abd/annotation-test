@@ -17,9 +17,9 @@ h1 { font-size: 20px; margin: 0; }
 button { background: #1f2937; color: #e5e7eb; border: 1px solid #334155; padding: 8px 12px; border-radius: 10px; cursor: pointer; }
 button:hover { background: #374151; }
 .status { opacity: 0.8; font-size: 14px; }
-.query { margin: 16px 0; }
-.query img { max-height: 240px; border-radius: 12px; display: block; border: 1px solid #334155; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; max-height: 400px; overflow-y: auto;   padding: 10px;}
+.query { margin: 16px 0; text-align: center; }
+.query img { max-height: 240px; border-radius: 12px; display: inline-block; border: 1px solid #334155; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; max-height: 400px; overflow-y: auto; padding: 10px;}
 .card { position: relative; border-radius: 12px; overflow: hidden; background: #0b1220; border: 1px solid #334155; cursor: pointer; }
 .card img { width: 100%; height: 140px; object-fit: cover; display: block; }
 .badge { position: absolute; top: 6px; left: 6px; padding: 2px 6px; border-radius: 999px; font-size: 12px; background: #111827; border: 1px solid #334155; }
@@ -28,38 +28,54 @@ button:hover { background: #374151; }
 .hint { font-size: 13px; opacity: .8; }
 .footer { padding: 16px 24px; opacity: 0.7; font-size: 13px; }
 a { color: #93c5fd; }
-.batch-nav { display: flex; gap: 10px; align-items: center; margin-left: auto; }
+
+.layout { display: flex; gap: 20px; }
+.left-panel { flex: 1; display: flex; flex-direction: column; gap: 16px; align-items: center; }
+.right-panel { flex: 3; }
+.controls { display: flex; gap: 10px; align-items: center; }
+.batch-nav { display: flex; gap: 10px; align-items: center; }
 </style>
 </head>
 <body>
 <header>
-<h1>Image Labeling Tool</h1>
-<div class="status" id="status"></div>
-<div class="batch-nav">
-  <button id="prevBatch">&lt;</button>
-  <span id="batchCounter">0 / 0</span>
-  <button id="nextBatch">&gt;</button>
-</div>
+  <h1>Image Labeling Tool</h1>
+  <div class="status" id="status"></div>
 </header>
+
 <div class="container">
-<div class="toolbar">
-  <button id="save">Save Selections</button>
-  <span class="hint">left-click = positive (green), right-click = negative (red), click again to clear</span>
+  <div class="layout">
+    <!-- Left side -->
+    <div class="left-panel">
+      <section class="query">
+        <h3>Query Image</h3>
+        <img id="queryImg" alt="Query" />
+      </section>
+
+      <!-- Batch nav moved here -->
+      <div class="batch-nav">
+        <button id="prevBatch">&lt;</button>
+        <span id="batchCounter">0 / 0</span>
+        <button id="nextBatch">&gt;</button>
+      </div>
+
+      <div class="controls">
+        <button id="save">Save Selections</button>
+      </div>
+    </div>
+
+    <!-- Right side -->
+    <div class="right-panel">
+      <section>
+        <h3>Candidates</h3>
+        <div class="grid" id="grid"></div>
+      </section>
+    </div>
+  </div>
 </div>
 
-<section class="query">
-  <h3>Query Image</h3>
-  <img id="queryImg" alt="Query" />
-</section>
-
-<section>
-  <h3>Candidates</h3>
-  <div class="grid" id="grid"></div>
-</section>
-</div>
-<footer class="container">
+<!-- <footer class="container">
 Backend API: <code id="apiBase"></code> — Images served directly by backend at <code>/images/*</code>
-</footer>
+</footer> -->
 
 <script>
 const API = 'http://localhost:8000';  
@@ -70,7 +86,7 @@ const queryImg = document.getElementById('queryImg');
 const status = document.getElementById('status');
 const batchCounter = document.getElementById('batchCounter');
 const selected = new Map();
-const savedSelections = new Map(); // store saved selections per query
+const savedSelections = new Map();
 
 let currentIndex = 0;
 let batchIndex = 0;
@@ -117,24 +133,17 @@ function updateFocusAndState() {
   const cards = grid.getElementsByClassName('card');
   Array.from(cards).forEach((c, idx) => {
     const state = selected.get(idx);
-
-    // Reset all styles
     c.classList.remove('pos', 'neg');
     c.style.outline = '';
-
-    // Apply inner color (green/red)
     if (state === 'pos') c.classList.add('pos');
     else if (state === 'neg') c.classList.add('neg');
-
-    // Add outer blue border if focused
     if (idx === currentIndex) {
       c.style.outline = '4px solid #3b82f6';
-      c.style.outlineOffset = '-2px'; // pulls outline closer so it wraps around inner shadow nicely
+      c.style.outlineOffset = '-2px';
     }
   });
   updateBatchCounter();
 }
-
 
 async function fetchBatch(batch) {
   setStatus('Loading batch...');
@@ -144,19 +153,15 @@ async function fetchBatch(batch) {
     const res = await fetch(`${API}/api/batch/${batch}`);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-
     queryImg.src = `${API}${data.queryImage}`;
     data.images.forEach((u, index) => grid.appendChild(card(u, index)));
-
-    // restore previously saved selections for this query
     const saved = savedSelections.get(data.queryImage) || {};
     grid.querySelectorAll('.card').forEach((c, idx) => {
       const imgUrl = c.querySelector('img').src.replace(API, '');
       if (saved.positives?.includes(imgUrl)) selected.set(idx, 'pos');
       if (saved.negatives?.includes(imgUrl)) selected.set(idx, 'neg');
     });
-
-    setStatus('Batch loaded. Select matches and click Save.');
+    setStatus('Batch loaded. Select matches and click Save or ctrl+ -> to go next batch.');
     currentIndex = 0;
     updateFocusAndState();
   } catch (err) {
@@ -177,10 +182,8 @@ async function fetchTotalBatches() {
   }
 }
 
-// Save selections and auto next
 async function saveSelections(autoNext=false) {
-  const positives = [];
-  const negatives = [];
+  const positives = [], negatives = [];
   const cards = grid.getElementsByClassName('card');
   Array.from(cards).forEach((c, idx) => {
     const state = selected.get(idx);
@@ -188,26 +191,17 @@ async function saveSelections(autoNext=false) {
     if (state === 'neg') negatives.push(c.querySelector('img').src.replace(API, ''));
   });
 
-  const body = {
-    queryImage: queryImg.src.replace(API, ''),
-    positives,
-    negatives
-  };
-
+  const body = { queryImage: queryImg.src.replace(API, ''), positives, negatives };
   setStatus('Saving...');
   try {
     const res = await fetch(`${API}/api/labels/save`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     await res.json();
     setStatus('Saved ✓');
-
-    // store locally for restoring previous selections
     savedSelections.set(body.queryImage, { positives, negatives });
-
     if (autoNext && batchIndex < totalBatches - 1) {
       batchIndex++;
       fetchBatch(batchIndex);
@@ -218,25 +212,16 @@ async function saveSelections(autoNext=false) {
   }
 }
 
-// Navigation buttons
 document.getElementById('nextBatch').addEventListener('click', () => {
-  if (batchIndex < totalBatches - 1) {
-    batchIndex++;
-    fetchBatch(batchIndex);
-  }
+  if (batchIndex < totalBatches - 1) { batchIndex++; fetchBatch(batchIndex); }
 });
 document.getElementById('prevBatch').addEventListener('click', () => {
-  if (batchIndex > 0) {
-    batchIndex--;
-    fetchBatch(batchIndex);
-  }
+  if (batchIndex > 0) { batchIndex--; fetchBatch(batchIndex); }
 });
 
-// Keyboard navigation including Ctrl+Arrow
 window.addEventListener('keydown', (e) => {
   const cards = grid.getElementsByClassName('card');
   if (!cards.length) return;
-
   if (e.key === 'ArrowRight' && !e.ctrlKey) currentIndex = Math.min(currentIndex + 1, cards.length - 1);
   else if (e.key === 'ArrowLeft' && !e.ctrlKey) currentIndex = Math.max(currentIndex - 1, 0);
   else if (e.key === ' '){
@@ -246,25 +231,15 @@ window.addEventListener('keydown', (e) => {
     else if (cur === 'neg') selected.delete(currentIndex);
     e.preventDefault();
   }
-  else if (e.key === 'ArrowRight' && e.ctrlKey) { // Ctrl+Right => save and next
-    saveSelections(true);
+  else if (e.key === 'ArrowRight' && e.ctrlKey) { saveSelections(true); e.preventDefault(); }
+  else if (e.key === 'ArrowLeft' && e.ctrlKey) {
+    if (batchIndex > 0) { batchIndex--; fetchBatch(batchIndex); }
     e.preventDefault();
   }
-  else if (e.key === 'ArrowLeft' && e.ctrlKey) { // Ctrl+Left => previous batch and restore
-    if (batchIndex > 0) {
-      batchIndex--;
-      fetchBatch(batchIndex);
-    }
-    e.preventDefault();
-  }
-
   updateFocusAndState();
 });
 
-// Attach save button
 document.getElementById('save').addEventListener('click', () => saveSelections(false));
-
-// Initialize
 fetchTotalBatches().then(() => fetchBatch(batchIndex));
 </script>
 </body>
