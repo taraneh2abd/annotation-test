@@ -73,7 +73,7 @@ const selected = new Map();
 
 let currentIndex = 0;
 let batchIndex = 0;          // tracks current batch number
-let totalBatches = 15;       // total batches, adjust as needed
+let totalBatches = 0;       // will be fetched from backend
 
 function setStatus(msg) { status.textContent = msg || ''; }
 
@@ -124,7 +124,6 @@ function updateFocusAndState() {
       c.classList.add('focus');
       if (state === 'pos') c.classList.add('pos');
       else if (state === 'neg') c.classList.add('neg');
-      else c.classList.add('focus');
     }
 
     const badge = c.querySelector('.badge');
@@ -133,8 +132,6 @@ function updateFocusAndState() {
   updateBatchCounter();
 }
 
-// Fetch batch based on batchIndex
-// Fetch batch based on batchIndex from backend/batches.py
 async function fetchBatch(batch) {
   setStatus('Loading batch...');
   selected.clear();
@@ -155,7 +152,19 @@ async function fetchBatch(batch) {
   }
 }
 
-// Update saveSelections to load next batch automatically
+async function fetchTotalBatches() {
+    try {
+        const res = await fetch(`${API}/api/batches/count`);
+        const data = await res.json();
+        totalBatches = data.total;
+        updateBatchCounter();
+    } catch (err) {
+        console.error(err);
+        totalBatches = 0;
+    }
+}
+
+// Save selections and auto next
 async function saveSelections() {
   const positives = [];
   const negatives = [];
@@ -180,48 +189,13 @@ async function saveSelections() {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    setStatus('Saved ✓ — ' + (data.ok ? 'ok' : 'not ok'));
+    await res.json();
+    setStatus('Saved ✓');
 
-    // automatically go to next batch if available
     if (batchIndex < totalBatches - 1) {
       batchIndex++;
       fetchBatch(batchIndex);
     }
-  } catch (err) {
-    console.error(err);
-    setStatus('Save failed: ' + err.message);
-  }
-}
-
-
-// Save selections
-async function saveSelections() {
-  const positives = [];
-  const negatives = [];
-  const cards = grid.getElementsByClassName('card');
-  Array.from(cards).forEach((c, idx) => {
-    const state = selected.get(idx);
-    if (state === 'pos') positives.push(c.querySelector('img').src.replace(API, ''));
-    if (state === 'neg') negatives.push(c.querySelector('img').src.replace(API, ''));
-  });
-
-  const body = {
-    queryImage: queryImg.src.replace(API, ''),
-    positives,
-    negatives
-  };
-
-  setStatus('Saving...');
-  try {
-    const res = await fetch(`${API}/api/labels/save`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    setStatus('Saved ✓ — ' + (data.ok ? 'ok' : 'not ok'));
   } catch (err) {
     console.error(err);
     setStatus('Save failed: ' + err.message);
@@ -242,7 +216,7 @@ document.getElementById('prevBatch').addEventListener('click', () => {
   }
 });
 
-// Keyboard navigation for images
+// Keyboard navigation
 window.addEventListener('keydown', (e) => {
   const cards = grid.getElementsByClassName('card');
   if (!cards.length) return;
@@ -259,12 +233,11 @@ window.addEventListener('keydown', (e) => {
   updateFocusAndState();
 });
 
-// Attach buttons
+// Attach save button
 document.getElementById('save').addEventListener('click', saveSelections);
 
-// Initial fetch
-fetchBatch(batchIndex);
+// Initialize
+fetchTotalBatches().then(() => fetchBatch(batchIndex));
 </script>
-</bod
-y>
+</body>
 </html>
