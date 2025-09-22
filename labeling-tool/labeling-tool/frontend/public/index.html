@@ -105,35 +105,46 @@ function card(url, index) {
   return d;
 }
 
-async function fetchSession() {
+async function fetchSession(next = false) {
   setStatus('Loading batch...');
   selected.clear();
   grid.innerHTML = '';
   try {
-    const res = await fetch(API + '/api/session');
+    const res = await fetch(API + '/api/session' + (next ? '?next=true' : ''));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
 
-    queryImg.src = `${API}${data.queryImage}`;  
+    queryImg.src = `${API}${data.queryImage}`;
     data.images.forEach((u, index) => grid.appendChild(card(u, index)));
     setStatus('Batch loaded. Select matches and click Save.');
+    updateFocus();
   } catch (err) {
     console.error(err);
     setStatus('Failed to load: ' + err.message);
   }
 }
 
+// Button for new batch
+
+
 async function saveSelections() {
   const positives = [];
   const negatives = [];
+  const cards = grid.getElementsByClassName('card');
+  
   for (const [index, state] of selected.entries()) {
-    if (state === 'pos') positives.push(index);
-    if (state === 'neg') negatives.push(index);
+    const imgEl = cards[index].querySelector('img');
+    const url = imgEl.src.replace(API, ''); // get relative URL like /images/img_70.png
+    if (state === 'pos') positives.push(url);
+    if (state === 'neg') negatives.push(url);
   }
+  
   const body = {
-    queryImage: queryImg.src,
-    positives, negatives,
+    queryImage: queryImg.src.replace(API, ''), // relative URL
+    positives,
+    negatives,
   };
+  
   setStatus('Saving...');
   try {
     const res = await fetch(API + '/api/labels/save', {
@@ -150,6 +161,7 @@ async function saveSelections() {
   }
 }
 
+
 function updateFocus() {
   const cards = grid.getElementsByClassName('card');
   Array.from(cards).forEach((c, idx) => {
@@ -165,14 +177,14 @@ function updateFocusAndState() {
     c.classList.remove('focus', 'pos', 'neg');
     if (state === 'pos') c.classList.add('pos');
     else if (state === 'neg') c.classList.add('neg');
-
+    
     if (idx === currentIndex) {
       c.classList.add('focus');
       if (state === 'pos') c.classList.add('pos');
       else if (state === 'neg') c.classList.add('neg');
       else c.classList.add('focus');
     }
-
+    
     const badge = c.querySelector('.badge');
     badge.textContent = state || (idx === currentIndex ? 'selected' : '—');
   });
@@ -181,7 +193,7 @@ function updateFocusAndState() {
 window.addEventListener('keydown', (e) => {
   const cards = grid.getElementsByClassName('card');
   if (!cards.length) return;
-
+  
   if (e.key === 'ArrowRight') currentIndex = Math.min(currentIndex + 1, cards.length - 1);
   else if (e.key === 'ArrowLeft') currentIndex = Math.max(currentIndex - 1, 0);
   else if (e.key === ' ') {
@@ -191,7 +203,7 @@ window.addEventListener('keydown', (e) => {
     else if (cur === 'neg') selected.delete(currentIndex);
     e.preventDefault();
   }
-
+  
   updateFocusAndState();
 });
 
@@ -200,8 +212,9 @@ fetchSession().then(updateFocus);
 
 // Attach buttons
 document.getElementById('save').addEventListener('click', saveSelections);
-document.getElementById('newBatch').addEventListener('click', fetchSession);
+// document.getElementById('newBatch').addEventListener('click', fetchSession);
+document.getElementById('newBatch').addEventListener('click', () => fetchSession(true));
 
-  </script>
+</script>
 </body>
 </html>

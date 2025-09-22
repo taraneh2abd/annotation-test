@@ -55,7 +55,6 @@ def ensure_indexes():
     try:
         labels_col.create_index([("query_image", ASCENDING), ("ts", ASCENDING)])
     except PyMongoError as e:
-        # Log only; don’t crash the app
         print(f"[warn] failed to create index: {e}")
 
 def ping_mongo() -> bool:
@@ -118,27 +117,23 @@ def get_session(
     if not IMAGE_LIST:
         raise HTTPException(status_code=404, detail=f"No images found in {IMAGE_ROOT}")
     rng = random.Random(seed if seed is not None else time.time_ns())
-    # query_rel = rng.choice(IMAGE_LIST)
-    query_rel = "img_72.png"
+    
+    # Example for sequential query images:
+    query_rel = IMAGE_LIST[offset % len(IMAGE_LIST)]
 
     # page window with wrap-around
-    start = offset % len(IMAGE_LIST)
+    start = (offset + 1) % len(IMAGE_LIST)  # candidates start after query
     page = IMAGE_LIST[start:start + limit]
     if len(page) < limit and len(IMAGE_LIST) > 0:
         page += IMAGE_LIST[0:limit - len(page)]
 
-    # ensure query not in candidates and fill to limit
+    # ensure query not in candidates
     page = [p for p in page if p != query_rel]
-    if len(page) < limit:
-        extras = [p for p in IMAGE_LIST if p != query_rel and p not in page]
-        rng.shuffle(extras)
-        page.extend(extras[: (limit - len(page))])
 
     return {
-        "queryImage": f"/images/{query_rel}",   # relative URL for query image
-        "images": [f"/images/{p}" for p in page],   # relative URLs for candidate images
+        "queryImage": f"/images/{query_rel}",  
+        "images": [f"/images/{p}" for p in page],  
     }
-
 
 @app.post("/api/labels/save")
 def save_labels(body: SaveLabelsBody):
