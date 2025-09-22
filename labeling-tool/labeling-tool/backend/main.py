@@ -1,10 +1,9 @@
 import os
-import random
 import time
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -28,12 +27,8 @@ MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASS}@{MONGO_HOST}:{MONGO_PORT}/"
 # ---------------- App ----------------
 app = FastAPI(title="Image Labeling API")
 
-# CORS
-if CORS_ORIGINS == "*":
-    allow_origins = ["*"]
-else:
-    allow_origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
-
+# ---------------- CORS ----------------
+allow_origins = ["*"] if CORS_ORIGINS == "*" else [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
@@ -42,11 +37,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Ensure image dir exists and mount static
+# ---------------- Static Images ----------------
 Path(IMAGE_ROOT).mkdir(parents=True, exist_ok=True)
 app.mount("/images", StaticFiles(directory=IMAGE_ROOT), name="images")
 
-# ---------------- DB (lazy, resilient) ----------------
+# ---------------- Database ----------------
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
 db = client[MONGO_DB]
 labels_col = db[MONGO_COLLECTION]
@@ -74,7 +69,7 @@ def scan_images(root: str) -> List[str]:
         for n in names:
             if Path(n).suffix.lower() in exts:
                 rel = os.path.relpath(os.path.join(base, n), root)
-                files.append(rel.replace("\\", "/"))  # normalize for URLs
+                files.append(rel.replace("\\", "/"))
     return sorted(files)
 
 IMAGE_LIST: List[str] = scan_images(IMAGE_ROOT)
@@ -91,6 +86,23 @@ class SaveLabelsBody(BaseModel):
     queryImage: str
     positives: List[str] = []
     negatives: List[str] = []
+
+# ---------------- Batches ----------------
+BATCHES = [
+    {
+        "queryImage": "/images/img_69.png",
+        "images": ["/images/img_70.png", "/images/img_71.png", "/images/img_72.png"]
+    },
+    {
+        "queryImage": "/images/img_72.png",
+        "images": ["/images/img_73.png", "/images/img_74.png", "/images/img_75.png", "/images/img_76.png"]
+    },
+    {
+        "queryImage": "/images/img_77.png",
+        "images": ["/images/img_78.png", "/images/img_79.png"]
+    },
+    # add more batches here
+]
 
 # ---------------- Endpoints ----------------
 @app.get("/api/health")
@@ -112,27 +124,18 @@ def refresh():
 def get_session(
     offset: int = Query(0, ge=0),
     limit: int = Query(PAGE_SIZE_DEFAULT, ge=1, le=200),
-    seed: Optional[int] = None,
 ):
     if not IMAGE_LIST:
         raise HTTPException(status_code=404, detail=f"No images found in {IMAGE_ROOT}")
-    rng = random.Random(seed if seed is not None else time.time_ns())
-    
-    # Example for sequential query images:
     query_rel = IMAGE_LIST[offset % len(IMAGE_LIST)]
-
-    # page window with wrap-around
-    start = (offset + 1) % len(IMAGE_LIST)  # candidates start after query
+    start = (offset + 1) % len(IMAGE_LIST)
     page = IMAGE_LIST[start:start + limit]
     if len(page) < limit and len(IMAGE_LIST) > 0:
         page += IMAGE_LIST[0:limit - len(page)]
-
-    # ensure query not in candidates
     page = [p for p in page if p != query_rel]
-
     return {
-        "queryImage": f"/images/{query_rel}",  
-        "images": [f"/images/{p}" for p in page],  
+        "queryImage": f"/images/{query_rel}",
+        "images": [f"/images/{p}" for p in page],
     }
 
 @app.post("/api/labels/save")
@@ -150,3 +153,15 @@ def save_labels(body: SaveLabelsBody):
         return {"ok": True, "saved": 1}
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------- Batch APIs ----------------
+@app.get("/api/batch/{index}", response_model=SessionResponse, tags=["Batches"])
+def get_batch(index: int = PathParam(..., ge=0, description="Batch index")):
+    if index >= len(BATCHES):
+        raise HTTPException(status_code=404, detail="Batch index out of range")
+    return BATCHES[index]
+
+@app.get("/api/batches/count", tags=["Batches"])
+def get_batches_count():
+    """Return total number of batches"""
+    return {"total": len(BATCHES)}
