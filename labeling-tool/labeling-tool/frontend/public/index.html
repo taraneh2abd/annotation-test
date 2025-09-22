@@ -70,10 +70,11 @@ const queryImg = document.getElementById('queryImg');
 const status = document.getElementById('status');
 const batchCounter = document.getElementById('batchCounter');
 const selected = new Map();
+const savedSelections = new Map(); // store saved selections per query
 
 let currentIndex = 0;
-let batchIndex = 0;          // tracks current batch number
-let totalBatches = 0;       // will be fetched from backend
+let batchIndex = 0;
+let totalBatches = 0;
 
 function setStatus(msg) { status.textContent = msg || ''; }
 
@@ -143,6 +144,15 @@ async function fetchBatch(batch) {
 
     queryImg.src = `${API}${data.queryImage}`;
     data.images.forEach((u, index) => grid.appendChild(card(u, index)));
+
+    // restore previously saved selections for this query
+    const saved = savedSelections.get(data.queryImage) || {};
+    grid.querySelectorAll('.card').forEach((c, idx) => {
+      const imgUrl = c.querySelector('img').src.replace(API, '');
+      if (saved.positives?.includes(imgUrl)) selected.set(idx, 'pos');
+      if (saved.negatives?.includes(imgUrl)) selected.set(idx, 'neg');
+    });
+
     setStatus('Batch loaded. Select matches and click Save.');
     currentIndex = 0;
     updateFocusAndState();
@@ -153,19 +163,19 @@ async function fetchBatch(batch) {
 }
 
 async function fetchTotalBatches() {
-    try {
-        const res = await fetch(`${API}/api/batches/count`);
-        const data = await res.json();
-        totalBatches = data.total;
-        updateBatchCounter();
-    } catch (err) {
-        console.error(err);
-        totalBatches = 0;
-    }
+  try {
+    const res = await fetch(`${API}/api/batches/count`);
+    const data = await res.json();
+    totalBatches = data.total;
+    updateBatchCounter();
+  } catch (err) {
+    console.error(err);
+    totalBatches = 0;
+  }
 }
 
 // Save selections and auto next
-async function saveSelections() {
+async function saveSelections(autoNext=false) {
   const positives = [];
   const negatives = [];
   const cards = grid.getElementsByClassName('card');
@@ -192,7 +202,10 @@ async function saveSelections() {
     await res.json();
     setStatus('Saved ✓');
 
-    if (batchIndex < totalBatches - 1) {
+    // store locally for restoring previous selections
+    savedSelections.set(body.queryImage, { positives, negatives });
+
+    if (autoNext && batchIndex < totalBatches - 1) {
       batchIndex++;
       fetchBatch(batchIndex);
     }
@@ -216,25 +229,37 @@ document.getElementById('prevBatch').addEventListener('click', () => {
   }
 });
 
-// Keyboard navigation
+// Keyboard navigation including Ctrl+Arrow
 window.addEventListener('keydown', (e) => {
   const cards = grid.getElementsByClassName('card');
   if (!cards.length) return;
 
-  if (e.key === 'ArrowRight') currentIndex = Math.min(currentIndex + 1, cards.length - 1);
-  else if (e.key === 'ArrowLeft') currentIndex = Math.max(currentIndex - 1, 0);
-  else if (e.key === ' ') {
+  if (e.key === 'ArrowRight' && !e.ctrlKey) currentIndex = Math.min(currentIndex + 1, cards.length - 1);
+  else if (e.key === 'ArrowLeft' && !e.ctrlKey) currentIndex = Math.max(currentIndex - 1, 0);
+  else if (e.key === ' '){
     const cur = selected.get(currentIndex);
     if (!cur) selected.set(currentIndex, 'pos');
     else if (cur === 'pos') selected.set(currentIndex, 'neg');
     else if (cur === 'neg') selected.delete(currentIndex);
     e.preventDefault();
   }
+  else if (e.key === 'ArrowRight' && e.ctrlKey) { // Ctrl+Right => save and next
+    saveSelections(true);
+    e.preventDefault();
+  }
+  else if (e.key === 'ArrowLeft' && e.ctrlKey) { // Ctrl+Left => previous batch and restore
+    if (batchIndex > 0) {
+      batchIndex--;
+      fetchBatch(batchIndex);
+    }
+    e.preventDefault();
+  }
+
   updateFocusAndState();
 });
 
 // Attach save button
-document.getElementById('save').addEventListener('click', saveSelections);
+document.getElementById('save').addEventListener('click', () => saveSelections(false));
 
 // Initialize
 fetchTotalBatches().then(() => fetchBatch(batchIndex));
