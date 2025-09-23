@@ -22,9 +22,6 @@ button:hover { background: #374151; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; max-height: 450px; overflow-y: auto; padding: 20px;}
 .card { position: relative; border-radius: 12px; overflow: hidden; background: #0b1220; border: 1px solid #334155; cursor: pointer; }
 .card img { width: 100%; height: 140px; object-fit: cover; display: block; }
-/* .badge { position: absolute; top: 6px; padding: 2px 6px; border-radius: 999px; font-size: 12px; background: #111827; border: 1px solid #334155; }
-.badge.pos { left: 6px; background-color: #10b981; color: #fff; }
-.badge.neg { right: 6px; background-color: #ef4444; color: #fff; } */
 .pos { box-shadow: 0 0 0 3px #10b981 inset; }
 .neg { box-shadow: 0 0 0 3px #ef4444 inset; }
 .hint { font-size: 13px; opacity: .8; }
@@ -44,6 +41,8 @@ a { color: #93c5fd; }
 .queryWrap { position: relative; display: inline-block; }
 .queryWrap .badge.pos { left: 6px; top: 6px; }
 .queryWrap .badge.neg { right: 6px; top: 6px; }
+
+/* circular badges */
 .badge {
   position: absolute;
   top: 6px;
@@ -55,16 +54,10 @@ a { color: #93c5fd; }
   font-weight: bold;
   text-align: center;
   color: #fff;
+  pointer-events: none;
 }
-.badge.pos { 
-  left: 6px; 
-  background-color: #10b981;  /* green */
-}
-.badge.neg { 
-  right: 6px; 
-  background-color: #ef4444;  /* red */
-}
-
+.badge.pos { left: 6px; background-color: #10b981; }
+.badge.neg { right: 6px; background-color: #ef4444; }
 </style>
 </head>
 <body>
@@ -118,7 +111,6 @@ if(!TOKEN) window.location.href='index.html';
 function initApp(){
   const params = new URLSearchParams(window.location.search);
   const queryNum = params.get("query");
-  console.log("Requested query number:", queryNum);
   const grid = document.getElementById('grid');
   const queryImg = document.getElementById('queryImg');
   const status = document.getElementById('status');
@@ -126,7 +118,7 @@ function initApp(){
   const selected = new Map();
   const savedSelections = new Map();
 
-  // Map from relative image url -> { posEl, negEl }
+  // Map: imageUrl -> Array<{posEl, negEl}> for *currently visible* elements
   const badgeMap = new Map();
 
   let currentIndex = 0;
@@ -135,6 +127,10 @@ function initApp(){
 
   function setStatus(msg){ status.textContent = msg || ''; }
 
+  function removeExistingBadges(container){
+    container.querySelectorAll('.badge').forEach(b => b.remove());
+  }
+
   function createBadge(text, cls){
     const b = document.createElement('div');
     b.className = `badge ${cls}`;
@@ -142,23 +138,26 @@ function initApp(){
     return b;
   }
 
+  // Always create new badges for the given container and register them
   function attachBadgesForUrl(container, url){
-    // ensure unique per image url
-    if(badgeMap.has(url)) return badgeMap.get(url);
     const pos = createBadge(0, 'pos');
     const neg = createBadge(0, 'neg');
     container.appendChild(pos);
     container.appendChild(neg);
     const pair = { posEl: pos, negEl: neg };
-    badgeMap.set(url, pair);
+    const arr = badgeMap.get(url) || [];
+    arr.push(pair);
+    badgeMap.set(url, arr);
     return pair;
-    }
+  }
 
   function setBadgeCounts(url, posCount, negCount){
-    const pair = badgeMap.get(url);
-    if(!pair) return;
-    pair.posEl.textContent = String(posCount ?? 0);
-    pair.negEl.textContent = String(negCount ?? 0);
+    const arr = badgeMap.get(url);
+    if(!arr) return;
+    for(const pair of arr){
+      pair.posEl.textContent = String(posCount ?? 0);
+      pair.negEl.textContent = String(negCount ?? 0);
+    }
   }
 
   function card(url,index){
@@ -169,7 +168,7 @@ function initApp(){
     img.draggable=false;
     d.appendChild(img);
 
-    // badges for this candidate
+    // badges for this candidate (always create fresh for this container)
     attachBadgesForUrl(d, url);
 
     d.addEventListener('click',()=>{
@@ -211,41 +210,55 @@ function initApp(){
   async function fetchBatch(batch){
     setStatus('Loading batch...');
     selected.clear();
+    badgeMap.clear();               // NEW: reset mapping for new DOM
     grid.innerHTML='';
+
     try{
       const res=await fetch(`${API}/api/batch/${batch}`,{headers:{Authorization:`Bearer ${TOKEN}`}});
       if(!res.ok) throw new Error('Failed to load batch');
       const data=await res.json();
 
-      // set query image
+      // query image
       queryImg.src=`${API}${data.queryImage}`;
-
-      // badges for the query image (use its wrapper)
       const queryUrl = data.queryImage;
-      const qWrap = queryImg.parentElement; // .queryWrap
+      const qWrap = queryImg.parentElement;
+
+      // remove old badges from the persistent query wrapper and reattach fresh ones
+      removeExistingBadges(qWrap);
       attachBadgesForUrl(qWrap, queryUrl);
 
-      // create candidate cards
+      // candidates
       data.images.forEach((u,i)=>grid.appendChild(card(u,i)));
 
-      // restore saved selections for this query if any (local UI memory)
-      const saved=savedSelections.get(data.queryImage)||{};
+      // hydrate saved selections from server
+      try {
+        const resSaved = await fetch(`${API}/api/labels/get?queryImage=${encodeURIComponent(queryUrl)}`, {
+          headers: { Authorization: `Bearer ${TOKEN}` }
+        });
+        if(resSaved.ok){
+          const sv = await resSaved.json();
+          savedSelections.set(queryUrl, { positives: sv.positives||[], negatives: sv.negatives||[] });
+        }
+      } catch(e){ console.warn("could not load saved labels", e); }
+
+      // apply to UI
+      selected.clear();
+      const saved = savedSelections.get(queryUrl)||{};
       grid.querySelectorAll('.card').forEach((c,idx)=>{
         const imgUrl=c.querySelector('img').src.replace(API,'');
         if(saved.positives?.includes(imgUrl)) selected.set(idx,'pos');
         if(saved.negatives?.includes(imgUrl)) selected.set(idx,'neg');
       });
 
-      // initialize badges to 0
-      setBadgeCounts(queryUrl, 0, 0);
-      data.images.forEach(u=>setBadgeCounts(u, 0, 0));
-
-      // fetch and apply stats for all visible images (query + candidates)
+      // init counts for visible items and fetch stats
+      setBadgeCounts(queryUrl,0,0);
+      data.images.forEach(u=>setBadgeCounts(u,0,0));
       await refreshStats([queryUrl, ...data.images]);
 
       currentIndex=0;
       updateFocusAndState();
       setStatus('Batch loaded. Select matches and click Save or ctrl+ →');
+      localStorage.setItem('currentBatch', String(batchIndex));
     }catch(err){
       console.warn("Query fetch failed, fallback to batch 0", err);
       await fetchBatch(0);
@@ -273,11 +286,9 @@ function initApp(){
       const stats = data.stats || {};
       Object.keys(stats).forEach(url=>{
         const s = stats[url] || {};
-        setBadgeCounts(url, s.positive_count || 0, s.negative_count || 0);
+        setBadgeCounts(url, s.positive_count||0, s.negative_count||0);
       });
-    }catch(e){
-      console.error('stats error', e);
-    }
+    }catch(e){ console.error('stats error', e); }
   }
 
   async function saveSelections(autoNext=false){
@@ -288,7 +299,7 @@ function initApp(){
       if(state==='pos') positives.push(c.querySelector('img').src.replace(API,''));
       if(state==='neg') negatives.push(c.querySelector('img').src.replace(API,''));
     });
-    const queryUrl = queryImg.src.replace(API,'');
+    const queryUrl=queryImg.src.replace(API,'');
     const body={queryImage:queryUrl, positives, negatives};
     setStatus('Saving...');
     try{
@@ -300,20 +311,25 @@ function initApp(){
       await res.json();
       savedSelections.set(body.queryImage,{positives,negatives});
       setStatus('Saved ✓');
-
-      // refresh counts on screen immediately
-      const visibleImages = [queryUrl, ...Array.from(cards).map(c=>c.querySelector('img').src.replace(API,''))];
-      await refreshStats(visibleImages);
-
+      const visible=[queryUrl,...Array.from(cards).map(c=>c.querySelector('img').src.replace(API,''))];
+      await refreshStats(visible);
       if(autoNext && batchIndex<totalBatches-1){
         batchIndex++;
+        localStorage.setItem('currentBatch', String(batchIndex));
         fetchBatch(batchIndex);
       }
     }catch(err){ console.error(err); setStatus(err.message);}
   }
 
   document.getElementById('nextBatch').addEventListener('click',()=>saveSelections(true));
-  document.getElementById('prevBatch').addEventListener('click',()=>saveSelections(false).then(()=>{if(batchIndex>0){batchIndex--; fetchBatch(batchIndex);}}));
+  document.getElementById('prevBatch').addEventListener('click',()=>saveSelections(false).then(()=>{
+    if(batchIndex>0){
+      batchIndex--;
+      localStorage.setItem('currentBatch', String(batchIndex));
+      fetchBatch(batchIndex);
+    }
+  }));
+
   window.addEventListener('keydown',e=>{
     const cards=grid.getElementsByClassName('card');
     if(!cards.length) return;
@@ -329,28 +345,31 @@ function initApp(){
       else if(cur==='neg') selected.delete(currentIndex);
       e.preventDefault();
     }
-    else if(e.ctrlKey && e.key==='ArrowRight'){ saveSelections(true); e.preventDefault(); }
-    else if(e.ctrlKey && e.key==='ArrowLeft'){ saveSelections(false).then(()=>{ if(batchIndex>0){ batchIndex--; fetchBatch(batchIndex);} }); e.preventDefault(); }
+    else if(e.ctrlKey && e.key==='ArrowRight'){
+      saveSelections(true); e.preventDefault();
+    }
+    else if(e.ctrlKey && e.key==='ArrowLeft'){
+      saveSelections(false).then(()=>{
+        if(batchIndex>0){
+          batchIndex--;
+          localStorage.setItem('currentBatch', String(batchIndex));
+          fetchBatch(batchIndex);
+        }
+      });
+      e.preventDefault();
+    }
     updateFocusAndState();
   });
 
   document.getElementById('save').addEventListener('click',()=>saveSelections(false));
 
-  // Load batches: query number first, fallback to 0
-  fetchTotalBatches().then(async () => {
-    if (queryNum) {
-      try {
-        batchIndex = parseInt(queryNum, 10);  // Update batchIndex to the query number
-        await fetchBatch(batchIndex);
-      } catch (e) {
-        console.warn("Query not found, fallback to batch 0");
-        batchIndex = 0;
-        await fetchBatch(batchIndex);
-      }
-    } else {
-      batchIndex = 0;
-      await fetchBatch(batchIndex);
-    }
+  // Load batches: use query param, or persisted, or default to 0
+  fetchTotalBatches().then(async()=>{
+    const persisted=localStorage.getItem('currentBatch');
+    if(queryNum!==null){ batchIndex=parseInt(queryNum,10)||0; }
+    else if(persisted!==null){ batchIndex=parseInt(persisted,10)||0; }
+    else { batchIndex=0; }
+    await fetchBatch(batchIndex);
   });
 }
 
