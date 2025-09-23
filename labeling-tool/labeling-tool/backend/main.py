@@ -1,18 +1,20 @@
+# main.py
 import os
 import time
 from pathlib import Path
 from typing import List
 
-from fastapi import FastAPI, HTTPException, Query, Path as PathParam, Depends, Header
+from fastapi import FastAPI, HTTPException, Query, Path as PathParam, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pymongo import MongoClient, ASCENDING
 from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
-import jwt
-from jwt import PyJWTError
 
-# ---------------- Environment ----------------
+from auth import login_user, LoginRequest, LoginResponse, verify_token
+from batches import BATCHES
+
+# ---------------- Env ----------------
 MONGO_HOST = os.getenv("MONGO_HOST", "mongo")
 MONGO_PORT = int(os.getenv("MONGO_PORT", "27017"))
 MONGO_USER = os.getenv("MONGO_INITDB_ROOT_USERNAME", "root")
@@ -21,15 +23,12 @@ MONGO_DB = os.getenv("MONGO_DB", "labeldb")
 MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "labels")
 IMAGE_ROOT = os.getenv("IMAGE_ROOT", "/data/images")
 PAGE_SIZE_DEFAULT = int(os.getenv("PAGE_SIZE", "20"))
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecret123")  # for JWT
-ALGORITHM = "HS256"
 
 MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASS}@{MONGO_HOST}:{MONGO_PORT}/"
 
 # ---------------- App ----------------
 app = FastAPI(title="Image Labeling API")
 
-# ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -69,7 +68,7 @@ def ping_mongo() -> bool:
 
 ensure_indexes()
 
-# ---------------- Image scan ----------------
+# ---------------- Image Scan ----------------
 def scan_images(root: str) -> List[str]:
     exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
     files: List[str] = []
@@ -94,34 +93,12 @@ class SaveLabelsBody(BaseModel):
     positives: List[str] = []
     negatives: List[str] = []
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-# ---------------- JWT Authentication ----------------
-def verify_token(authorization: str = Header(...)):
-    try:
-        scheme, token = authorization.split()
-        if scheme.lower() != "bearer":
-            raise HTTPException(status_code=401, detail="Invalid auth scheme")
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
-    except (ValueError, PyJWTError):
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-# ---------------- Login Endpoint ----------------
+# ---------------- Auth Endpoint ----------------
 @app.post("/api/login", response_model=LoginResponse)
 def login(req: LoginRequest):
-    if req.username == "user" and req.password == "1234":
-        token = jwt.encode({"sub": req.username, "exp": time.time() + 3600}, SECRET_KEY, algorithm=ALGORITHM)
-        return {"access_token": token, "token_type": "bearer"}
-    raise HTTPException(status_code=401, detail="Invalid credentials")
+    return login_user(req)
 
-# ---------------- Health & Refresh ----------------
+# ---------------- Health ----------------
 @app.get("/api/health")
 def health():
     return {"status": "ok", "images": len(IMAGE_LIST), "mongo": ping_mongo(), "image_root": IMAGE_ROOT}
@@ -132,7 +109,7 @@ def refresh():
     IMAGE_LIST = scan_images(IMAGE_ROOT)
     return {"ok": True, "count": len(IMAGE_LIST)}
 
-# ---------------- Session Endpoint ----------------
+# ---------------- Session & Labels ----------------
 @app.get("/api/session", response_model=SessionResponse)
 def get_session(offset: int = Query(0, ge=0), limit: int = Query(PAGE_SIZE_DEFAULT, ge=1, le=200), user=Depends(verify_token)):
     if not IMAGE_LIST:
@@ -145,7 +122,6 @@ def get_session(offset: int = Query(0, ge=0), limit: int = Query(PAGE_SIZE_DEFAU
     page = [p for p in page if p != query_rel]
     return {"queryImage": f"/images/{query_rel}", "images": [f"/images/{p}" for p in page]}
 
-# ---------------- Labels save with upsert ----------------
 @app.post("/api/labels/save")
 def save_labels(body: SaveLabelsBody, user=Depends(verify_token)):
     if not ping_mongo():
@@ -157,33 +133,6 @@ def save_labels(body: SaveLabelsBody, user=Depends(verify_token)):
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ---------------- Batch APIs ----------------
-BATCHES = [
-    {
-        "queryImage": "/images/img_69.png",
-        "images": ["/images/img_70.png", "/images/img_71.png", "/images/img_72.png"]
-    },
-    {
-        "queryImage": "/images/img_72.png",
-        "images": ["/images/img_73.png", "/images/img_74.png", "/images/img_75.png", "/images/img_76.png"]
-    },
-    {
-        "queryImage": "/images/img_77.png",
-        "images": ["/images/img_78.png", "/images/img_79.png"]
-    },
-    {
-        "queryImage": "/images/img_73.png",
-        "images": ["/images/img_940.png", "/images/img_941.png", "/images/img_942.png", "/images/img_953.png","/images/img_954.png", "/images/img_965.png", "/images/img_966.png", "/images/img_977.png",
-                   "/images/img_948.png", "/images/img_949.png", "/images/img_940.png", "/images/img_951.png","/images/img_952.png", "/images/img_963.png", "/images/img_964.png", "/images/img_975.png",
-                   "/images/img_940.png", "/images/img_941.png", "/images/img_942.png", "/images/img_953.png","/images/img_954.png", "/images/img_965.png", "/images/img_966.png", "/images/img_977.png",
-                   "/images/img_948.png", "/images/img_949.png", "/images/img_940.png", "/images/img_951.png","/images/img_952.png", "/images/img_963.png", "/images/img_964.png", "/images/img_975.png"
-                   ]
-    },
-    {
-        "queryImage": "/images/img_82.png",
-        "images": ["/images/img_83.png", "/images/img_84.png", "/images/img_80.png", "/images/img_85.png"]
-    },
-]
 
 @app.get("/api/batch/{index}", response_model=SessionResponse)
 def get_batch(index: int = PathParam(..., ge=0), user=Depends(verify_token)):
