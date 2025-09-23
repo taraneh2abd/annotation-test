@@ -37,14 +37,16 @@ services:
       MONGO_DB: ${MONGO_DB:-labeldb}
       MONGO_COLLECTION: ${MONGO_COLLECTION:-labels}
       IMAGE_ROOT: /data/images
+      UPLOAD_ROOT: /data/uploads           # <— add a separate folder for uploads
       PAGE_SIZE: ${PAGE_SIZE:-20}
       BACKEND_PORT: ${BACKEND_PORT:-8000}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
-      - ./images:/data/images:ro
-      - ./backend:/app:ro         # <— add this line
+      - ./images:/data/images              # remove :ro so it’s writable if needed
+      - ./backend/uploads:/data/uploads    # persist uploaded ZIPs
+      - ./backend:/app                      # do NOT set :ro
 
   frontend:
     build: ./frontend

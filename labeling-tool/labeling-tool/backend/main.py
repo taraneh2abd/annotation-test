@@ -27,6 +27,12 @@ MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "labels")
 IMAGE_ROOT = os.getenv("IMAGE_ROOT", "/data/images")
 PAGE_SIZE_DEFAULT = int(os.getenv("PAGE_SIZE", "20"))
 
+UPLOAD_ROOT = os.getenv("UPLOAD_ROOT", "/data/uploads")
+BATCH_DIR = Path(UPLOAD_ROOT) / "batches"
+NON_LABELED_DIR = Path(UPLOAD_ROOT) / "non_labeled"
+BATCH_DIR.mkdir(parents=True, exist_ok=True)
+NON_LABELED_DIR.mkdir(parents=True, exist_ok=True)
+
 MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASS}@{MONGO_HOST}:{MONGO_PORT}/"
 
 # ---------------- App ----------------
@@ -136,7 +142,6 @@ def save_labels(body: SaveLabelsBody, user=Depends(verify_token)):
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/api/batch/{index}", response_model=SessionResponse)
 def get_batch(index: int = PathParam(..., ge=0), user=Depends(verify_token)):
     if index >= len(BATCHES):
@@ -147,31 +152,21 @@ def get_batch(index: int = PathParam(..., ge=0), user=Depends(verify_token)):
 def get_batches_count(user=Depends(verify_token)):
     return {"total": len(BATCHES)}
 
-
-
+# ---------------- Upload ZIP Endpoints ----------------
 @app.post("/api/upload_batch")
 async def upload_batch(file: UploadFile = File(...), user=Depends(verify_token)):
-    if not file.filename.endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Only ZIP files allowed")
-    dest = Path("./data/batches") / file.filename
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with dest.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return {"filename": file.filename, "status": "saved"}
+    dest = BATCH_DIR / file.filename
+    contents = await file.read()
+    with open(dest, "wb") as f:
+        f.write(contents)
+    print(f"Received batch ZIP: {file.filename} -> {dest}")
+    return {"ok": True, "filename": file.filename}
 
 @app.post("/api/upload_non_labeled")
 async def upload_non_labeled(file: UploadFile = File(...), user=Depends(verify_token)):
-    if not file.filename.endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Only ZIP files allowed")
-    dest = Path("./data/non_labeled") / file.filename
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with dest.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return {"filename": file.filename, "status": "saved"}
-
-# ---------------- Get batch by index ----------------
-@app.get("/api/batch/{index}", response_model=SessionResponse)
-def get_batch_by_index(index: int = PathParam(..., ge=0), user=Depends(verify_token)):
-    if index >= len(BATCHES):
-        raise HTTPException(status_code=404, detail="Batch index out of range")
-    return BATCHES[index]
+    dest = NON_LABELED_DIR / file.filename
+    contents = await file.read()
+    with open(dest, "wb") as f:
+        f.write(contents)
+    print(f"Received non-labeled ZIP: {file.filename} -> {dest}")
+    return {"ok": True, "filename": file.filename}

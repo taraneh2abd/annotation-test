@@ -38,6 +38,8 @@ button:hover { background:#374151; }
 const API = 'http://localhost:8000';
 
 // upload batch
+// upload batch
+// upload batch
 document.getElementById('uploadBatchBtn').addEventListener('click', () => {
   const input = document.createElement('input');
   input.type = 'file';
@@ -47,12 +49,13 @@ document.getElementById('uploadBatchBtn').addEventListener('click', () => {
     if(file){
       const formData = new FormData();
       formData.append('file', file);
-      await fetch(`${API}/api/upload_batch`, {
+      const res = await fetch(`${API}/api/upload_batch`, {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + localStorage.getItem('TOKEN') },
         body: formData
       });
-      alert('Batch uploaded!');
+      const data = await res.json();
+      alert(`Batch uploaded: ${data.filename}`);
     }
   };
   input.click();
@@ -68,12 +71,13 @@ document.getElementById('uploadImagesBtn').addEventListener('click', () => {
     if(file){
       const formData = new FormData();
       formData.append('file', file);
-      await fetch(`${API}/api/upload_images`, {
+      const res = await fetch(`${API}/api/upload_non_labeled`, {   // <-- FIXED endpoint
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + localStorage.getItem('TOKEN') },
         body: formData
       });
-      alert('Images uploaded!');
+      const data = await res.json();
+      alert(`Non-labeled images uploaded: ${data.filename}`);
     }
   };
   input.click();
@@ -81,9 +85,11 @@ document.getElementById('uploadImagesBtn').addEventListener('click', () => {
 
 // go to labeling input page
 document.getElementById('labelingBtn').addEventListener('click', () => {
-  const queryNum = prompt("Enter labeling query number:");
-  if(queryNum){
-    window.location.href = `app.html?query=${encodeURIComponent(queryNum)}`;
+  let queryNum = prompt("Enter labeling query number (1-based):");
+  if (queryNum) {
+    // Convert to 0-based index for internal use
+    const batchIndex = parseInt(queryNum, 10) - 1;
+    window.location.href = `app.html?query=${encodeURIComponent(batchIndex)}`;
   }
 });
 
