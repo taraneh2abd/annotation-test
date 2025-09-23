@@ -34,7 +34,7 @@ def verify_token(authorization: str = Header(...)):
 
 def login_user(req: LoginRequest):
     # Replace this with hashed password check in real app
-    if req.username == "user" and req.password == "1234":
+    if req.username == "user" and req.password == "MyS3cur3P@ss!":
         token = create_token(req.username)
         return {"access_token": token, "token_type": "bearer"}
     raise HTTPException(status_code=401, detail="Invalid credentials")

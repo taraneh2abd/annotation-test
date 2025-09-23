@@ -8,7 +8,7 @@ One command brings up the whole stack (MongoDB, Mongo Express, Backend API, and 
 2. In this directory, run:
 
 name =user 
-password =1234
+password =MyS3cur3P@ss!
 
 ```bash
 docker login
