@@ -1,3 +1,4 @@
+<!-- //app.html -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -85,6 +86,9 @@ const TOKEN = localStorage.getItem('TOKEN');
 if(!TOKEN) window.location.href='index.html';
 
 function initApp(){
+  const params = new URLSearchParams(window.location.search);
+  const queryNum = params.get("query");
+  console.log("Query number:", queryNum);
   const grid = document.getElementById('grid');
   const queryImg = document.getElementById('queryImg');
   const status = document.getElementById('status');

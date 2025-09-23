@@ -1,3 +1,4 @@
+<!-- index.html/ -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -38,7 +39,7 @@ loginBtn.addEventListener('click', async () => {
     if(!res.ok) throw new Error('Invalid username or password');
     const data = await res.json();
     localStorage.setItem('TOKEN', data.access_token);
-    window.location.href = 'app.html';
+    window.location.href = 'menu.html';
   } catch(err) {
     loginMsg.textContent = err.message;
   }
