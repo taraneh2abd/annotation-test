@@ -3,6 +3,9 @@ import os
 import time
 from pathlib import Path
 from typing import List
+# ---------------- Upload ZIP APIs ----------------
+from fastapi import UploadFile, File
+import shutil
 
 from fastapi import FastAPI, HTTPException, Query, Path as PathParam, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -143,3 +146,32 @@ def get_batch(index: int = PathParam(..., ge=0), user=Depends(verify_token)):
 @app.get("/api/batches/count")
 def get_batches_count(user=Depends(verify_token)):
     return {"total": len(BATCHES)}
+
+
+
+@app.post("/api/upload_batch")
+async def upload_batch(file: UploadFile = File(...), user=Depends(verify_token)):
+    if not file.filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Only ZIP files allowed")
+    dest = Path("./data/batches") / file.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    return {"filename": file.filename, "status": "saved"}
+
+@app.post("/api/upload_non_labeled")
+async def upload_non_labeled(file: UploadFile = File(...), user=Depends(verify_token)):
+    if not file.filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Only ZIP files allowed")
+    dest = Path("./data/non_labeled") / file.filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    return {"filename": file.filename, "status": "saved"}
+
+# ---------------- Get batch by index ----------------
+@app.get("/api/batch/{index}", response_model=SessionResponse)
+def get_batch_by_index(index: int = PathParam(..., ge=0), user=Depends(verify_token)):
+    if index >= len(BATCHES):
+        raise HTTPException(status_code=404, detail="Batch index out of range")
+    return BATCHES[index]
