@@ -55,6 +55,9 @@ try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
     db = client[MONGO_DB]
     labels_col = db[MONGO_COLLECTION]
+    # NEW: collection to track per-image positive/negative tallies
+    image_stats_col = db["image_stats"]
+    image_stats_col.create_index("image", unique=True)
 except Exception as e:
     print(f"[error] MongoDB connection failed: {e}")
     raise e
@@ -63,6 +66,7 @@ def ensure_indexes():
     try:
         labels_col.create_index([("query_image", ASCENDING)], unique=True)
         labels_col.create_index([("ts", ASCENDING)])
+        # (image_stats unique index created above)
     except PyMongoError as e:
         print(f"[warn] failed to create index: {e}")
 
@@ -102,6 +106,18 @@ class SaveLabelsBody(BaseModel):
     positives: List[str] = []
     negatives: List[str] = []
 
+# NEW: bulk stats request/response
+class StatsBulkRequest(BaseModel):
+    images: List[str]
+
+class ImageStat(BaseModel):
+    positive_count: int = 0
+    negative_count: int = 0
+
+class StatsBulkResponse(BaseModel):
+    # map image -> counts
+    stats: dict
+
 # ---------------- Auth Endpoint ----------------
 @app.post("/api/login", response_model=LoginResponse)
 def login(req: LoginRequest):
@@ -133,14 +149,97 @@ def get_session(offset: int = Query(0, ge=0), limit: int = Query(PAGE_SIZE_DEFAU
 
 @app.post("/api/labels/save")
 def save_labels(body: SaveLabelsBody, user=Depends(verify_token)):
+    """
+    Save labels for a query and update global per-image stats.
+
+    Rule: every (queryImage, candidate) pair counts for BOTH images.
+    - positive match: +1 positive for queryImage and candidate
+    - negative match: +1 negative for queryImage and candidate
+    Re-saves adjust via diffs so totals remain correct.
+    """
     if not ping_mongo():
         raise HTTPException(status_code=503, detail="MongoDB not reachable")
-    doc = {"positives": body.positives, "negatives": body.negatives, "ts": int(time.time())}
+
+    query_image = body.queryImage
+    # de-duplicate & sanitize overlaps
+    new_pos = set(body.positives or [])
+    new_neg = set(body.negatives or [])
+    # Remove any accidental overlaps; prefer last state semantics (neg wins if overlapping sets provided)
+    # but since front won't overlap, this is a safety net:
+    overlap = new_pos & new_neg
+    if overlap:
+        # drop overlapped from positives
+        new_pos -= overlap
+
+    # fetch previous state BEFORE overwrite
+    prev_doc = labels_col.find_one({"query_image": query_image}) or {"positives": [], "negatives": []}
+    prev_pos = set(prev_doc.get("positives", []))
+    prev_neg = set(prev_doc.get("negatives", []))
+
+    # compute diffs
+    added_pos = new_pos - prev_pos
+    removed_pos = prev_pos - new_pos
+    added_neg = new_neg - prev_neg
+    removed_neg = prev_neg - new_neg
+
+    # Build increments for both sides (candidate and query image)
+    from collections import defaultdict
+    inc = defaultdict(lambda: {"positive_count": 0, "negative_count": 0})
+
+    def bump(img, dp=0, dn=0):
+        inc[img]["positive_count"] += dp
+        inc[img]["negative_count"] += dn
+
+    # Helper to apply change to both candidate and query
+    def pair_delta(candidate_img, dp=0, dn=0):
+        if candidate_img == query_image:
+            # Shouldn't happen (page excludes query), but guard anyway: count once.
+            bump(candidate_img, dp, dn)
+        else:
+            bump(candidate_img, dp, dn)
+            bump(query_image, dp, dn)
+
+    for img in added_pos:
+        pair_delta(img, dp=1, dn=0)
+    for img in removed_pos:
+        pair_delta(img, dp=-1, dn=0)
+    for img in added_neg:
+        pair_delta(img, dp=0, dn=1)
+    for img in removed_neg:
+        pair_delta(img, dp=0, dn=-1)
+
+    # write the updated labels first (so the doc reflects current state)
+    doc = {"query_image": query_image, "positives": sorted(list(new_pos)), "negatives": sorted(list(new_neg)), "ts": int(time.time())}
     try:
-        result = labels_col.update_one({"query_image": body.queryImage}, {"$set": doc}, upsert=True)
-        return {"ok": True, "matched": result.matched_count, "modified": result.modified_count}
+        labels_col.update_one({"query_image": query_image}, {"$set": doc}, upsert=True)
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    # then apply stat increments (upserts)
+    try:
+        for img, delta in inc.items():
+            to_inc = {}
+            if delta["positive_count"] != 0:
+                to_inc["positive_count"] = delta["positive_count"]
+            if delta["negative_count"] != 0:
+                to_inc["negative_count"] = delta["negative_count"]
+            if not to_inc:
+                continue
+            image_stats_col.update_one(
+                {"image": img},
+                {"$inc": to_inc},
+                upsert=True
+            )
+    except PyMongoError as e:
+        print(f"[warn] failed to update stats: {e}")
+
+    return {
+        "ok": True,
+        "changed": {
+            "added_pos": len(added_pos), "removed_pos": len(removed_pos),
+            "added_neg": len(added_neg), "removed_neg": len(removed_neg)
+        }
+    }
 
 @app.get("/api/batch/{index}", response_model=SessionResponse)
 def get_batch(index: int = PathParam(..., ge=0), user=Depends(verify_token)):
@@ -151,6 +250,25 @@ def get_batch(index: int = PathParam(..., ge=0), user=Depends(verify_token)):
 @app.get("/api/batches/count")
 def get_batches_count(user=Depends(verify_token)):
     return {"total": len(BATCHES)}
+
+# -------- NEW: Bulk stats endpoint (front uses this to render badges) --------
+@app.post("/api/image_stats/bulk", response_model=StatsBulkResponse)
+def image_stats_bulk(req: StatsBulkRequest, user=Depends(verify_token)):
+    images = list(set(req.images or []))
+    if not images:
+        return {"stats": {}}
+    try:
+        # fetch stats for requested images
+        stats_map = {img: {"positive_count": 0, "negative_count": 0} for img in images}
+        cursor = image_stats_col.find({"image": {"$in": images}})
+        for d in cursor:
+            stats_map[d["image"]] = {
+                "positive_count": int(d.get("positive_count", 0)),
+                "negative_count": int(d.get("negative_count", 0)),
+            }
+        return {"stats": stats_map}
+    except PyMongoError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------- Upload ZIP Endpoints ----------------
 @app.post("/api/upload_batch")

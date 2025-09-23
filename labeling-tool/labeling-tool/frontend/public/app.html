@@ -22,7 +22,9 @@ button:hover { background: #374151; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; max-height: 450px; overflow-y: auto; padding: 20px;}
 .card { position: relative; border-radius: 12px; overflow: hidden; background: #0b1220; border: 1px solid #334155; cursor: pointer; }
 .card img { width: 100%; height: 140px; object-fit: cover; display: block; }
-.badge { position: absolute; top: 6px; left: 6px; padding: 2px 6px; border-radius: 999px; font-size: 12px; background: #111827; border: 1px solid #334155; }
+/* .badge { position: absolute; top: 6px; padding: 2px 6px; border-radius: 999px; font-size: 12px; background: #111827; border: 1px solid #334155; }
+.badge.pos { left: 6px; background-color: #10b981; color: #fff; }
+.badge.neg { right: 6px; background-color: #ef4444; color: #fff; } */
 .pos { box-shadow: 0 0 0 3px #10b981 inset; }
 .neg { box-shadow: 0 0 0 3px #ef4444 inset; }
 .hint { font-size: 13px; opacity: .8; }
@@ -37,6 +39,32 @@ a { color: #93c5fd; }
 .batch-nav .controls-row { display: flex; align-items: center; gap: 8px; }
 .batch-nav .hints { font-size: 13px; color: #cbd5e1; line-height: 1.4; text-align: center; }
 .batch-nav button { padding: 6px 10px; font-weight: bold; }
+
+/* wrap just the query image so badges overlay correctly */
+.queryWrap { position: relative; display: inline-block; }
+.queryWrap .badge.pos { left: 6px; top: 6px; }
+.queryWrap .badge.neg { right: 6px; top: 6px; }
+.badge {
+  position: absolute;
+  top: 6px;
+  width: 22px;
+  height: 22px;
+  line-height: 22px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: bold;
+  text-align: center;
+  color: #fff;
+}
+.badge.pos { 
+  left: 6px; 
+  background-color: #10b981;  /* green */
+}
+.badge.neg { 
+  right: 6px; 
+  background-color: #ef4444;  /* red */
+}
+
 </style>
 </head>
 <body>
@@ -50,7 +78,10 @@ a { color: #93c5fd; }
     <div class="left-panel">
       <section class="query">
         <h3>Query Image</h3>
-        <img id="queryImg" alt="Query" />
+        <div class="queryWrap">
+          <img id="queryImg" alt="Query" />
+          <!-- badges injected by JS -->
+        </div>
       </section>
 
       <div class="batch-nav">
@@ -95,11 +126,40 @@ function initApp(){
   const selected = new Map();
   const savedSelections = new Map();
 
+  // Map from relative image url -> { posEl, negEl }
+  const badgeMap = new Map();
+
   let currentIndex = 0;
   let batchIndex = 0;
   let totalBatches = 0;
 
   function setStatus(msg){ status.textContent = msg || ''; }
+
+  function createBadge(text, cls){
+    const b = document.createElement('div');
+    b.className = `badge ${cls}`;
+    b.textContent = String(text ?? 0);
+    return b;
+  }
+
+  function attachBadgesForUrl(container, url){
+    // ensure unique per image url
+    if(badgeMap.has(url)) return badgeMap.get(url);
+    const pos = createBadge(0, 'pos');
+    const neg = createBadge(0, 'neg');
+    container.appendChild(pos);
+    container.appendChild(neg);
+    const pair = { posEl: pos, negEl: neg };
+    badgeMap.set(url, pair);
+    return pair;
+    }
+
+  function setBadgeCounts(url, posCount, negCount){
+    const pair = badgeMap.get(url);
+    if(!pair) return;
+    pair.posEl.textContent = String(posCount ?? 0);
+    pair.negEl.textContent = String(negCount ?? 0);
+  }
 
   function card(url,index){
     const d=document.createElement('div');
@@ -108,6 +168,10 @@ function initApp(){
     img.src=`${API}${url}`;
     img.draggable=false;
     d.appendChild(img);
+
+    // badges for this candidate
+    attachBadgesForUrl(d, url);
+
     d.addEventListener('click',()=>{
       currentIndex=index;
       const cur=selected.get(index);
@@ -152,18 +216,40 @@ function initApp(){
       const res=await fetch(`${API}/api/batch/${batch}`,{headers:{Authorization:`Bearer ${TOKEN}`}});
       if(!res.ok) throw new Error('Failed to load batch');
       const data=await res.json();
+
+      // set query image
       queryImg.src=`${API}${data.queryImage}`;
+
+      // badges for the query image (use its wrapper)
+      const queryUrl = data.queryImage;
+      const qWrap = queryImg.parentElement; // .queryWrap
+      attachBadgesForUrl(qWrap, queryUrl);
+
+      // create candidate cards
       data.images.forEach((u,i)=>grid.appendChild(card(u,i)));
+
+      // restore saved selections for this query if any (local UI memory)
       const saved=savedSelections.get(data.queryImage)||{};
       grid.querySelectorAll('.card').forEach((c,idx)=>{
         const imgUrl=c.querySelector('img').src.replace(API,'');
         if(saved.positives?.includes(imgUrl)) selected.set(idx,'pos');
         if(saved.negatives?.includes(imgUrl)) selected.set(idx,'neg');
       });
+
+      // initialize badges to 0
+      setBadgeCounts(queryUrl, 0, 0);
+      data.images.forEach(u=>setBadgeCounts(u, 0, 0));
+
+      // fetch and apply stats for all visible images (query + candidates)
+      await refreshStats([queryUrl, ...data.images]);
+
       currentIndex=0;
       updateFocusAndState();
       setStatus('Batch loaded. Select matches and click Save or ctrl+ →');
-    }catch(err){ console.warn("Query fetch failed, fallback to batch 0"); await fetchBatch(0);}
+    }catch(err){
+      console.warn("Query fetch failed, fallback to batch 0", err);
+      await fetchBatch(0);
+    }
   }
 
   async function fetchTotalBatches(){
@@ -175,6 +261,25 @@ function initApp(){
     }catch(err){ console.error(err); totalBatches=0; }
   }
 
+  async function refreshStats(images){
+    try{
+      const res = await fetch(`${API}/api/image_stats/bulk`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json', Authorization:`Bearer ${TOKEN}`},
+        body: JSON.stringify({ images })
+      });
+      if(!res.ok) throw new Error('stats fetch failed');
+      const data = await res.json();
+      const stats = data.stats || {};
+      Object.keys(stats).forEach(url=>{
+        const s = stats[url] || {};
+        setBadgeCounts(url, s.positive_count || 0, s.negative_count || 0);
+      });
+    }catch(e){
+      console.error('stats error', e);
+    }
+  }
+
   async function saveSelections(autoNext=false){
     const positives=[], negatives=[];
     const cards=grid.getElementsByClassName('card');
@@ -183,7 +288,8 @@ function initApp(){
       if(state==='pos') positives.push(c.querySelector('img').src.replace(API,''));
       if(state==='neg') negatives.push(c.querySelector('img').src.replace(API,''));
     });
-    const body={queryImage:queryImg.src.replace(API,''), positives, negatives};
+    const queryUrl = queryImg.src.replace(API,'');
+    const body={queryImage:queryUrl, positives, negatives};
     setStatus('Saving...');
     try{
       const res=await fetch(`${API}/api/labels/save`,{
@@ -194,7 +300,15 @@ function initApp(){
       await res.json();
       savedSelections.set(body.queryImage,{positives,negatives});
       setStatus('Saved ✓');
-      if(autoNext && batchIndex<totalBatches-1){ batchIndex++; fetchBatch(batchIndex);}
+
+      // refresh counts on screen immediately
+      const visibleImages = [queryUrl, ...Array.from(cards).map(c=>c.querySelector('img').src.replace(API,''))];
+      await refreshStats(visibleImages);
+
+      if(autoNext && batchIndex<totalBatches-1){
+        batchIndex++;
+        fetchBatch(batchIndex);
+      }
     }catch(err){ console.error(err); setStatus(err.message);}
   }
 
@@ -223,22 +337,21 @@ function initApp(){
   document.getElementById('save').addEventListener('click',()=>saveSelections(false));
 
   // Load batches: query number first, fallback to 0
-  // Load batches: query number first, fallback to 0
-fetchTotalBatches().then(async () => {
-  if (queryNum) {
-    try {
-      batchIndex = parseInt(queryNum, 10);  // Update batchIndex to the query number
-      await fetchBatch(batchIndex);
-    } catch (e) {
-      console.warn("Query not found, fallback to batch 0");
+  fetchTotalBatches().then(async () => {
+    if (queryNum) {
+      try {
+        batchIndex = parseInt(queryNum, 10);  // Update batchIndex to the query number
+        await fetchBatch(batchIndex);
+      } catch (e) {
+        console.warn("Query not found, fallback to batch 0");
+        batchIndex = 0;
+        await fetchBatch(batchIndex);
+      }
+    } else {
       batchIndex = 0;
       await fetchBatch(batchIndex);
     }
-  } else {
-    batchIndex = 0;
-    await fetchBatch(batchIndex);
-  }
-});
+  });
 }
 
 initApp();
