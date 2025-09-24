@@ -8,12 +8,25 @@ One command brings up the whole stack (MongoDB, Mongo Express, Backend API, and 
 2. In this directory, run:
 
 name =user 
-password =MyS3cur3P@ss!
+password =supersecret123
+
+best way to export the db:
+```bash
+MATCH (n)-[r]->(m)
+RETURN n,r,m
+```
+
+best way to delete all the db:
+```bash
+MATCH (n)
+DETACH DELETE n;
+```
+
 
 ```bash
 docker login
 
-docker compose up --build
+docker compose up --build -d
 ```
 
 3. Open:

@@ -5,3 +5,4 @@ python-dotenv==1.0.1
 starlette==0.38.4
 PyJWT==2.8.0
 python-multipart==0.0.12
+neo4j

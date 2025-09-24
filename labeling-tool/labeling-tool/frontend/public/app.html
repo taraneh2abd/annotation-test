@@ -13,7 +13,6 @@ body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; marg
 header { padding: 16px 24px; background: #111827; position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px; }
 h1 { font-size: 20px; margin: 0; }
 .container { padding: 16px 24px; }
-.toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
 button { background: #1f2937; color: #e5e7eb; border: 1px solid #334155; padding: 8px 12px; border-radius: 10px; cursor: pointer; }
 button:hover { background: #374151; }
 .status { opacity: 0.8; font-size: 14px; }
@@ -37,12 +36,10 @@ a { color: #93c5fd; }
 .batch-nav .hints { font-size: 13px; color: #cbd5e1; line-height: 1.4; text-align: center; }
 .batch-nav button { padding: 6px 10px; font-weight: bold; }
 
-/* wrap just the query image so badges overlay correctly */
 .queryWrap { position: relative; display: inline-block; }
 .queryWrap .badge.pos { left: 6px; top: 6px; }
 .queryWrap .badge.neg { right: 6px; top: 6px; }
 
-/* circular badges */
 .badge {
   position: absolute;
   top: 6px;
@@ -84,7 +81,7 @@ a { color: #93c5fd; }
           <button id="nextBatch">&gt;</button>
         </div>
         <div class="hints">
-          <p><strong>Ctrl → Ctrl ←</strong> will save automatically</p>
+          <p><strong>Ctrl → / Ctrl ←</strong> will save automatically</p>
           <p><strong>Left click:</strong> positive, <strong>Right click:</strong> negative</p>
         </div>
       </div>
@@ -108,18 +105,68 @@ const API = 'http://localhost:8000';
 const TOKEN = localStorage.getItem('TOKEN');
 if(!TOKEN) window.location.href='index.html';
 
+/* ---------- Path helpers (normalize always to relative) ---------- */
+function toRelative(url){
+  if (!url) return url;
+  // strip origin if present
+  try {
+    const u = new URL(url, API);
+    return u.pathname;
+  } catch {
+    // already relative
+    return url.replace(API, '');
+  }
+}
+function toAbsolute(url){ return `${API}${toRelative(url)}`; }
+
+/* ---------- Back-compat fetch for labels (relative first, then absolute) ---------- */
+async function fetchLabelsNormalized(queryRel){
+  const headers = { Authorization: `Bearer ${TOKEN}` };
+
+  // try with relative
+  let res = await fetch(`${API}/api/labels/get?queryImage=${encodeURIComponent(queryRel)}`, { headers });
+  if(res.ok){
+    const data = await res.json();
+    const any = (data.positives?.length||0) + (data.negatives?.length||0);
+    if(any){
+      return {
+        queryImage: queryRel,
+        positives: (data.positives||[]).map(x => toRelative(String(x).trim())),
+        negatives: (data.negatives||[]).map(x => toRelative(String(x).trim()))
+      };
+    }
+  }
+
+  // try with absolute (old saves)
+  const abs = `${API}${queryRel}`;
+  res = await fetch(`${API}/api/labels/get?queryImage=${encodeURIComponent(abs)}`, { headers });
+  if(res.ok){
+    const data = await res.json();
+    const any = (data.positives?.length||0) + (data.negatives?.length||0);
+    if(any){
+      return {
+        queryImage: queryRel,
+        positives: (data.positives||[]).map(x => toRelative(String(x).trim())),
+        negatives: (data.negatives||[]).map(x => toRelative(String(x).trim()))
+      };
+    }
+  }
+
+  return { queryImage: queryRel, positives: [], negatives: [] };
+}
+
 function initApp(){
   const params = new URLSearchParams(window.location.search);
   const queryNum = params.get("query");
+
   const grid = document.getElementById('grid');
   const queryImg = document.getElementById('queryImg');
   const status = document.getElementById('status');
   const batchCounter = document.getElementById('batchCounter');
-  const selected = new Map();
-  const savedSelections = new Map();
 
-  // Map: imageUrl -> Array<{posEl, negEl}> for *currently visible* elements
-  const badgeMap = new Map();
+  const selected = new Map();         // idx -> 'pos' | 'neg'
+  const savedSelections = new Map();  // queryRel -> {positives, negatives}
+  const badgeMap = new Map();         // imgRel -> [{posEl,negEl}...]
 
   let currentIndex = 0;
   let batchIndex = 0;
@@ -130,29 +177,22 @@ function initApp(){
   function removeExistingBadges(container){
     container.querySelectorAll('.badge').forEach(b => b.remove());
   }
-
   function createBadge(text, cls){
     const b = document.createElement('div');
     b.className = `badge ${cls}`;
     b.textContent = String(text ?? 0);
     return b;
   }
-
-  // Always create new badges for the given container and register them
-  function attachBadgesForUrl(container, url){
+  function attachBadgesForUrl(container, urlRel){
     const pos = createBadge(0, 'pos');
     const neg = createBadge(0, 'neg');
-    container.appendChild(pos);
-    container.appendChild(neg);
+    container.appendChild(pos); container.appendChild(neg);
     const pair = { posEl: pos, negEl: neg };
-    const arr = badgeMap.get(url) || [];
-    arr.push(pair);
-    badgeMap.set(url, arr);
-    return pair;
+    const arr = badgeMap.get(urlRel) || [];
+    arr.push(pair); badgeMap.set(urlRel, arr);
   }
-
-  function setBadgeCounts(url, posCount, negCount){
-    const arr = badgeMap.get(url);
+  function setBadgeCounts(urlRel, posCount, negCount){
+    const arr = badgeMap.get(urlRel);
     if(!arr) return;
     for(const pair of arr){
       pair.posEl.textContent = String(posCount ?? 0);
@@ -160,16 +200,12 @@ function initApp(){
     }
   }
 
-  function card(url,index){
-    const d=document.createElement('div');
-    d.className='card';
+  function card(urlRel,index){
+    const d=document.createElement('div'); d.className='card';
     const img=document.createElement('img');
-    img.src=`${API}${url}`;
-    img.draggable=false;
+    img.src=toAbsolute(urlRel); img.draggable=false;
     d.appendChild(img);
-
-    // badges for this candidate (always create fresh for this container)
-    attachBadgesForUrl(d, url);
+    attachBadgesForUrl(d, urlRel);
 
     d.addEventListener('click',()=>{
       currentIndex=index;
@@ -194,13 +230,11 @@ function initApp(){
     const cards=grid.getElementsByClassName('card');
     Array.from(cards).forEach((c,idx)=>{
       const state=selected.get(idx);
-      c.classList.remove('pos','neg');
-      c.style.outline='';
+      c.classList.remove('pos','neg'); c.style.outline='';
       if(state==='pos') c.classList.add('pos');
       else if(state==='neg') c.classList.add('neg');
       if(idx===currentIndex){
-        c.style.outline='4px solid #3b82f6';
-        c.style.outlineOffset='-2px';
+        c.style.outline='4px solid #3b82f6'; c.style.outlineOffset='-2px';
         c.scrollIntoView({behavior:'smooth',block:'nearest'});
       }
     });
@@ -210,7 +244,7 @@ function initApp(){
   async function fetchBatch(batch){
     setStatus('Loading batch...');
     selected.clear();
-    badgeMap.clear();               // NEW: reset mapping for new DOM
+    badgeMap.clear();
     grid.innerHTML='';
 
     try{
@@ -218,42 +252,38 @@ function initApp(){
       if(!res.ok) throw new Error('Failed to load batch');
       const data=await res.json();
 
-      // query image
-      queryImg.src=`${API}${data.queryImage}`;
-      const queryUrl = data.queryImage;
+      // Normalize query + candidates to relative
+      const queryRel = toRelative(data.queryImage);
+      const imgsRel = (data.images||[]).map(toRelative);
+
+      // set query image & badges
+      queryImg.src=toAbsolute(queryRel);
       const qWrap = queryImg.parentElement;
-
-      // remove old badges from the persistent query wrapper and reattach fresh ones
       removeExistingBadges(qWrap);
-      attachBadgesForUrl(qWrap, queryUrl);
+      attachBadgesForUrl(qWrap, queryRel);
 
-      // candidates
-      data.images.forEach((u,i)=>grid.appendChild(card(u,i)));
+      // candidates UI
+      imgsRel.forEach((u,i)=>grid.appendChild(card(u,i)));
 
-      // hydrate saved selections from server
+      // === hydrate saved selections from backend (relative-first, then absolute) ===
       try {
-        const resSaved = await fetch(`${API}/api/labels/get?queryImage=${encodeURIComponent(queryUrl)}`, {
-          headers: { Authorization: `Bearer ${TOKEN}` }
-        });
-        if(resSaved.ok){
-          const sv = await resSaved.json();
-          savedSelections.set(queryUrl, { positives: sv.positives||[], negatives: sv.negatives||[] });
-        }
+        const sv = await fetchLabelsNormalized(queryRel);
+        savedSelections.set(queryRel, { positives: sv.positives||[], negatives: sv.negatives||[] });
       } catch(e){ console.warn("could not load saved labels", e); }
 
-      // apply to UI
+      // apply saved selections to UI (green/red borders)
       selected.clear();
-      const saved = savedSelections.get(queryUrl)||{};
+      const saved = savedSelections.get(queryRel)||{};
       grid.querySelectorAll('.card').forEach((c,idx)=>{
-        const imgUrl=c.querySelector('img').src.replace(API,'');
-        if(saved.positives?.includes(imgUrl)) selected.set(idx,'pos');
-        if(saved.negatives?.includes(imgUrl)) selected.set(idx,'neg');
+        const imgRel = toRelative(c.querySelector('img').src);
+        if(saved.positives?.includes(imgRel)) selected.set(idx,'pos');
+        if(saved.negatives?.includes(imgRel)) selected.set(idx,'neg');
       });
 
-      // init counts for visible items and fetch stats
-      setBadgeCounts(queryUrl,0,0);
-      data.images.forEach(u=>setBadgeCounts(u,0,0));
-      await refreshStats([queryUrl, ...data.images]);
+      // init + fetch stats for badges
+      setBadgeCounts(queryRel,0,0);
+      imgsRel.forEach(u=>setBadgeCounts(u,0,0));
+      await refreshStats([queryRel, ...imgsRel]);
 
       currentIndex=0;
       updateFocusAndState();
@@ -274,19 +304,19 @@ function initApp(){
     }catch(err){ console.error(err); totalBatches=0; }
   }
 
-  async function refreshStats(images){
+  async function refreshStats(imagesRel){
     try{
       const res = await fetch(`${API}/api/image_stats/bulk`, {
         method: 'POST',
         headers: {'Content-Type':'application/json', Authorization:`Bearer ${TOKEN}`},
-        body: JSON.stringify({ images })
+        body: JSON.stringify({ images: imagesRel })
       });
       if(!res.ok) throw new Error('stats fetch failed');
       const data = await res.json();
       const stats = data.stats || {};
       Object.keys(stats).forEach(url=>{
         const s = stats[url] || {};
-        setBadgeCounts(url, s.positive_count||0, s.negative_count||0);
+        setBadgeCounts(toRelative(url), s.positive_count||0, s.negative_count||0);
       });
     }catch(e){ console.error('stats error', e); }
   }
@@ -296,11 +326,12 @@ function initApp(){
     const cards=grid.getElementsByClassName('card');
     Array.from(cards).forEach((c,idx)=>{
       const state=selected.get(idx);
-      if(state==='pos') positives.push(c.querySelector('img').src.replace(API,''));
-      if(state==='neg') negatives.push(c.querySelector('img').src.replace(API,''));
+      const rel = toRelative(c.querySelector('img').src);
+      if(state==='pos') positives.push(rel);
+      if(state==='neg') negatives.push(rel);
     });
-    const queryUrl=queryImg.src.replace(API,'');
-    const body={queryImage:queryUrl, positives, negatives};
+    const queryRel=toRelative(queryImg.src);
+    const body={queryImage:queryRel, positives, negatives};
     setStatus('Saving...');
     try{
       const res=await fetch(`${API}/api/labels/save`,{
@@ -311,14 +342,14 @@ function initApp(){
       await res.json();
       savedSelections.set(body.queryImage,{positives,negatives});
       setStatus('Saved ✓');
-      const visible=[queryUrl,...Array.from(cards).map(c=>c.querySelector('img').src.replace(API,''))];
+      const visible=[queryRel,...Array.from(cards).map(c=>toRelative(c.querySelector('img').src))];
       await refreshStats(visible);
       if(autoNext && batchIndex<totalBatches-1){
         batchIndex++;
         localStorage.setItem('currentBatch', String(batchIndex));
         fetchBatch(batchIndex);
       }
-    }catch(err){ console.error(err); setStatus(err.message);}
+    }catch(err){ console.error(err); setStatus(err.message); }
   }
 
   document.getElementById('nextBatch').addEventListener('click',()=>saveSelections(true));
@@ -345,9 +376,7 @@ function initApp(){
       else if(cur==='neg') selected.delete(currentIndex);
       e.preventDefault();
     }
-    else if(e.ctrlKey && e.key==='ArrowRight'){
-      saveSelections(true); e.preventDefault();
-    }
+    else if(e.ctrlKey && e.key==='ArrowRight'){ saveSelections(true); e.preventDefault(); }
     else if(e.ctrlKey && e.key==='ArrowLeft'){
       saveSelections(false).then(()=>{
         if(batchIndex>0){
@@ -363,7 +392,7 @@ function initApp(){
 
   document.getElementById('save').addEventListener('click',()=>saveSelections(false));
 
-  // Load batches: use query param, or persisted, or default to 0
+  // initial load: prefer ?query; else persisted; else 0
   fetchTotalBatches().then(async()=>{
     const persisted=localStorage.getItem('currentBatch');
     if(queryNum!==null){ batchIndex=parseInt(queryNum,10)||0; }
