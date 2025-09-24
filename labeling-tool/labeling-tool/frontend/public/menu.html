@@ -6,93 +6,226 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Menu - Image Labeling Tool</title>
 <style>
+:root{
+  --bg:#0f172a; --panel:#111827; --panel-2:#0b1220;
+  --fg:#e2e8f0; --muted:#94a3b8; --line:#334155;
+  --green:#10b981; --red:#ef4444; --blue:#3b82f6; --amber:#f59e0b;
+}
+*{box-sizing:border-box}
 body {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  margin:0; padding:0;
-  background:#0f172a; color:#e2e8f0;
-  display:flex; justify-content:center; align-items:center;
-  height:100vh;
+  margin:0; padding:0; background:var(--bg); color:var(--fg);
+  min-height:100vh; display:flex; align-items:center; justify-content:center;
 }
-#menu {
-  display:flex; flex-direction:column; align-items:center;
+#wrap { width:min(960px, 95vw); margin:auto; }
+header {
+  display:flex; align-items:center; justify-content:space-between;
+  gap:12px; padding:16px 20px; background:var(--panel); border:1px solid var(--line);
+  border-radius:14px; margin-bottom:16px;
 }
+header h2{ margin:0; font-size:18px; font-weight:700; }
+#status { font-size:13px; color:var(--muted); }
+
+.stats {
+  display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom:18px;
+}
+.card {
+  background:var(--panel-2); border:1px solid var(--line); border-radius:14px;
+  padding:14px 16px;
+}
+.card h4 { margin:0 0 6px 0; font-size:13px; color:var(--muted); font-weight:600; }
+.value { font-size:24px; font-weight:800; letter-spacing:.2px; }
+.subrow { display:flex; gap:8px; margin-top:8px; }
+.pill {
+  font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid var(--line);
+  background:#0f172a90; color:var(--fg);
+}
+.pill.green{ border-color:#067a5b50; background:#067a5b20; color:var(--fg); }
+.pill.red{ border-color:#7a062650; background:#7a062620; color:var(--fg); }
+
+.panel {
+  background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px;
+}
+
+#menu { display:flex; flex-direction:column; align-items:center; gap:10px; }
 button {
-  background:#1f2937; color:#e5e7eb;
-  border:1px solid #334155;
-  padding:12px 18px; border-radius:10px;
-  margin:10px; cursor:pointer; width:220px;
-  text-align:center; font-size:15px;
+  background:#1f2937; color:#e5e7eb; border:1px solid var(--line);
+  padding:12px 18px; border-radius:10px; cursor:pointer; width:260px;
+  text-align:center; font-size:15px; transition:background .15s ease;
 }
 button:hover { background:#374151; }
+.row { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+.small { font-size:12px; color:var(--muted); margin-top:6px; }
+
+.sep { height:1px; background:var(--line); margin:14px 0; opacity:.7; }
+.right { text-align:right; }
+.icon {
+  display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px;
+}
+.icon.green{ background:var(--green); }
+.icon.red{ background:var(--red); }
+.icon.blue{ background:var(--blue); }
+.icon.amber{ background:var(--amber); }
 </style>
 </head>
 <body>
-<div id="menu">
-  <h2 style="margin-bottom:20px;">Main Menu</h2>
-  <button id="uploadBatchBtn">Upload batch as ZIP</button>
-  <button id="uploadImagesBtn">Upload non labeled images as ZIP</button>
-  <button id="labelingBtn">Labeling the query number...</button>
+<div id="wrap">
+  <header>
+    <h2>Image Labeling Tool — Dashboard</h2>
+    <div id="status">Loading stats…</div>
+  </header>
+
+  <!-- Stats cards -->
+  <section class="stats" id="statsGrid" aria-live="polite">
+    <div class="card">
+      <h4><span class="icon blue"></span>Total Images</h4>
+      <div class="value" id="statImages">—</div>
+      <div class="small">Files found under <code>/images</code></div>
+    </div>
+
+    <div class="card">
+      <h4><span class="icon green"></span>Total Positive Matches</h4>
+      <div class="value" id="statPos">—</div>
+      <div class="subrow">
+        <div class="pill green" id="statPosMean">mean — / image</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4><span class="icon red"></span>Total Negative Matches</h4>
+      <div class="value" id="statNeg">—</div>
+      <div class="subrow">
+        <div class="pill red" id="statNegMean">mean — / image</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4><span class="icon amber"></span>Pos / Neg Ratio</h4>
+      <div class="value" id="statRatio">—</div>
+      <div class="small right">based on totals</div>
+    </div>
+  </section>
+
+  <!-- Actions -->
+  <section class="panel">
+    <div id="menu">
+      <div class="row">
+        <button id="uploadBatchBtn">Upload non labeled images as ZIP</button>
+        <button id="uploadImagesBtn">Upload non labeled images as ZIP</button>
+      </div>
+      <div class="row">
+        <button id="refreshStatsBtn">Process new uploads</button>
+      </div>
+      <div class="sep"></div>
+      <div class="row">
+        <button id="labelingBtn">Labeling the query number…</button>
+      </div>
+    </div>
+  </section>
 </div>
 
 <script>
 const API = 'http://localhost:8000';
+const TOKEN = localStorage.getItem('TOKEN');
+if(!TOKEN){ window.location.href='index.html'; }
 
-// upload batch
-// upload batch
-// upload batch
-document.getElementById('uploadBatchBtn').addEventListener('click', () => {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.zip';
-  input.onchange = async () => {
-    const file = input.files[0];
-    if(file){
-      const formData = new FormData();
-      formData.append('file', file);
+const $ = sel => document.querySelector(sel);
+const fmt = (n) => {
+  if(n===null || n===undefined || isNaN(n)) return '—';
+  // Pretty number formatting
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(n);
+};
+
+function setStatus(msg){ $('#status').textContent = msg || ''; }
+
+async function loadStats(){
+  setStatus('Loading stats…');
+  try {
+    const res = await fetch(`${API}/api/stats/summary`, {
+      headers: { Authorization: `Bearer ${TOKEN}` }
+    });
+    if(!res.ok) throw new Error('Failed to load stats');
+    const data = await res.json();
+
+    // Update cards
+    $('#statImages').textContent = fmt(data.image_count);
+    $('#statPos').textContent = fmt(data.total_positive_matches);
+    $('#statNeg').textContent = fmt(data.total_negative_matches);
+    $('#statPosMean').textContent = `mean ${fmt(data.mean_positive_matches_per_image)} / image`;
+    $('#statNegMean').textContent = `mean ${fmt(data.mean_negative_matches_per_image)} / image`;
+
+    const ratio = (data.total_negative_matches > 0)
+      ? (data.total_positive_matches / data.total_negative_matches)
+      : (data.total_positive_matches > 0 ? Infinity : 0);
+    $('#statRatio').textContent = (ratio === Infinity) ? '∞' : fmt(ratio);
+
+    setStatus('Stats up to date ✓');
+  } catch (e){
+    console.error(e);
+    setStatus('Failed to load stats');
+  }
+}
+
+function wireUploads(){
+  // Batch ZIP upload
+  $('#uploadBatchBtn').addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.zip';
+    input.onchange = async () => {
+      const file = input.files[0]; if(!file) return;
+      const formData = new FormData(); formData.append('file', file);
       const res = await fetch(`${API}/api/upload_batch`, {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + localStorage.getItem('TOKEN') },
+        headers: { Authorization: `Bearer ${TOKEN}` },
         body: formData
       });
       const data = await res.json();
-      alert(`Batch uploaded: ${data.filename}`);
-    }
-  };
-  input.click();
-});
+      alert(`Batch uploaded: ${data.filename || 'OK'}`);
+      loadStats(); // refresh counts if new images get scanned later
+    };
+    input.click();
+  });
 
-// upload non-labeled images
-document.getElementById('uploadImagesBtn').addEventListener('click', () => {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.zip';
-  input.onchange = async () => {
-    const file = input.files[0];
-    if(file){
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await fetch(`${API}/api/upload_non_labeled`, {   // <-- FIXED endpoint
+  // Non-labeled ZIP upload
+  $('#uploadImagesBtn').addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.zip';
+    input.onchange = async () => {
+      const file = input.files[0]; if(!file) return;
+      const formData = new FormData(); formData.append('file', file);
+      const res = await fetch(`${API}/api/upload_non_labeled`, {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + localStorage.getItem('TOKEN') },
+        headers: { Authorization: `Bearer ${TOKEN}` },
         body: formData
       });
       const data = await res.json();
-      alert(`Non-labeled images uploaded: ${data.filename}`);
+      alert(`Non-labeled images uploaded: ${data.filename || 'OK'}`);
+      loadStats();
+    };
+    input.click();
+  });
+
+  // Go to labeling (ask for query number, convert to 0-based)
+  $('#labelingBtn').addEventListener('click', () => {
+    let queryNum = prompt("Enter labeling query number (1-based):");
+    if (queryNum) {
+      const batchIndex = parseInt(queryNum, 10) - 1;
+      if (!isNaN(batchIndex) && batchIndex >= 0) {
+        window.location.href = `app.html?query=${encodeURIComponent(batchIndex)}`;
+      } else {
+        alert('Please enter a valid positive number.');
+      }
     }
-  };
-  input.click();
-});
+  });
 
-// go to labeling input page
-document.getElementById('labelingBtn').addEventListener('click', () => {
-  let queryNum = prompt("Enter labeling query number (1-based):");
-  if (queryNum) {
-    // Convert to 0-based index for internal use
-    const batchIndex = parseInt(queryNum, 10) - 1;
-    window.location.href = `app.html?query=${encodeURIComponent(batchIndex)}`;
-  }
-});
+  // Manual refresh
+  $('#refreshStatsBtn').addEventListener('click', loadStats);
+}
 
+// Boot
+wireUploads();
+loadStats();
 </script>
 </body>
 </html>

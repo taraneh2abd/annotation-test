@@ -6,6 +6,7 @@ from typing import List
 # ---------------- Upload ZIP APIs ----------------
 from fastapi import UploadFile, File
 import shutil
+from pydantic import BaseModel
 
 from fastapi import FastAPI, HTTPException, Query, Path as PathParam, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -288,3 +289,67 @@ async def upload_non_labeled(file: UploadFile = File(...), user=Depends(verify_t
         f.write(contents)
     print(f"Received non-labeled ZIP: {file.filename} -> {dest}")
     return {"ok": True, "filename": file.filename}
+
+
+class ProjectStatsResponse(BaseModel):
+    image_count: int
+    total_positive_matches: float
+    total_negative_matches: float
+    mean_positive_matches_per_image: float
+    mean_negative_matches_per_image: float
+    # optional raw sums if you want to see them too
+    sum_positive_count: int
+    sum_negative_count: int
+
+
+@app.get("/api/stats/summary", response_model=ProjectStatsResponse)
+def get_project_stats(user=Depends(verify_token)):
+    """
+    Returns:
+      - image_count: number of files under /images
+      - total_positive_matches: sum(positive_count)/2
+      - total_negative_matches: sum(negative_count)/2
+      - mean_*: total_*_matches / image_count
+    Notes:
+      Each match increments two images' counters (both sides), so divide sums by 2.
+    """
+    # Count files already scanned (same logic used elsewhere)
+    image_count = len(IMAGE_LIST)
+
+    # Aggregate sums from image_stats
+    try:
+        agg = db["image_stats"].aggregate([
+            {"$group": {
+                "_id": None,
+                "sumPos": {"$sum": "$positive_count"},
+                "sumNeg": {"$sum": "$negative_count"},
+            }}
+        ])
+        doc = next(agg, None) or {"sumPos": 0, "sumNeg": 0}
+    except PyMongoError as e:
+        raise HTTPException(status_code=500, detail=f"Mongo aggregate failed: {e}")
+
+    sum_pos = int(doc.get("sumPos", 0) or 0)
+    sum_neg = int(doc.get("sumNeg", 0) or 0)
+
+    # Each match is counted on both images, so divide by 2
+    total_pos_matches = sum_pos / 2.0
+    total_neg_matches = sum_neg / 2.0
+
+    # Per-image means (avoid div-by-zero)
+    if image_count > 0:
+        mean_pos = total_pos_matches / image_count
+        mean_neg = total_neg_matches / image_count
+    else:
+        mean_pos = 0.0
+        mean_neg = 0.0
+
+    return ProjectStatsResponse(
+        image_count=image_count,
+        total_positive_matches=total_pos_matches,
+        total_negative_matches=total_neg_matches,
+        mean_positive_matches_per_image=mean_pos,
+        mean_negative_matches_per_image=mean_neg,
+        sum_positive_count=sum_pos,
+        sum_negative_count=sum_neg,
+    )
