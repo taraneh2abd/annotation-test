@@ -1,3 +1,5 @@
+warning: the folder should be full of images. all other files will consider as image
+
 # Labeling Tool (MongoDB + REST API + Simple Frontend)
 
 One command brings up the whole stack (MongoDB, Mongo Express, Backend API, and Frontend). The frontend shows a **query image** and a grid of **20 candidate images** from a local folder. Left-click marks a **positive** (green border). Right-click marks a **negative** (red border). Clicking again on a selected image clears it. When you click **Save Selections**, your choices are stored in MongoDB for fast retrieval.

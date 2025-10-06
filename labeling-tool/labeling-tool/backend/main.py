@@ -1,6 +1,9 @@
 # my main
 
 # main.py
+import zipfile
+import re
+import shutil
 import os
 import time
 from pathlib import Path
@@ -23,7 +26,7 @@ IMAGE_ROOT = os.getenv("IMAGE_ROOT", "/data/images")
 UPLOAD_ROOT = os.getenv("UPLOAD_ROOT", "/data/uploads")
 PAGE_SIZE_DEFAULT = int(os.getenv("PAGE_SIZE", "20"))
 
-BATCH_DIR = Path(UPLOAD_ROOT) / "batches"
+BATCH_DIR = Path(UPLOAD_ROOT) / "labeled"
 NON_LABELED_DIR = Path(UPLOAD_ROOT) / "non_labeled"
 BATCH_DIR.mkdir(parents=True, exist_ok=True)
 NON_LABELED_DIR.mkdir(parents=True, exist_ok=True)
@@ -266,49 +269,157 @@ def image_stats_bulk(req: StatsBulkRequest, user=Depends(verify_token)):
 @app.get("/api/stats/summary", response_model=ProjectStatsResponse)
 def get_project_stats(user=Depends(verify_token)):
     """
-    Summaries to match prior app behavior:
-      - sum_positive_count: count of POSITIVE relationships (we keep this as "sum", same as before)
-      - total_positive_matches: sum_positive_count / 2.0   (kept for backward-compat)
-      - same for negative
+    Summaries to match prior app behavior + include CONNECTED relationships:
+      - sum_positive_count: count of POSITIVE relationships
+      - sum_negative_count: count of NEGATIVE relationships
+      - sum_connected_count: count of CONNECTED relationships
       - means computed as totals / image_count
     """
-    image_count = len(IMAGE_LIST)
+    image_count = len(IMAGE_LIST) or 1
 
     res_pos = run_query("MATCH (:Image)-[:POSITIVE]->(:Image) RETURN count(*) as c")
     res_neg = run_query("MATCH (:Image)-[:NEGATIVE]->(:Image) RETURN count(*) as c")
-    sum_pos = res_pos[0]["c"]
-    sum_neg = res_neg[0]["c"]
+    res_con = run_query("MATCH (:Image)-[:CONNECTED]-(:Image) RETURN count(*) as c")
 
-    # Preserve previous semantics: divide by 2
-    total_pos_matches = sum_pos 
-    total_neg_matches = sum_neg 
+    sum_pos = res_pos[0]["c"] if res_pos else 0
+    sum_neg = res_neg[0]["c"] if res_neg else 0
+    sum_con = res_con[0]["c"] if res_con else 0
 
-    mean_pos = total_pos_matches / image_count if image_count else 0.0
-    mean_neg = total_neg_matches / image_count if image_count else 0.0
+    # Preserve semantics
+    total_pos_matches = sum_pos
+    total_neg_matches = sum_neg
+    total_con_matches = sum_con
 
-    return ProjectStatsResponse(
-        image_count=image_count,
-        total_positive_matches=total_pos_matches,
-        total_negative_matches=total_neg_matches,
-        mean_positive_matches_per_image=mean_pos,
-        mean_negative_matches_per_image=mean_neg,
-        sum_positive_count=sum_pos,
-        sum_negative_count=sum_neg,
-    )
+    mean_pos = total_pos_matches / image_count
+    mean_neg = total_neg_matches / image_count
+    mean_con = total_con_matches / image_count
 
-# ---------------- Upload ZIP Endpoints ----------------
+    # Extend return dict for front compatibility
+    return {
+        "image_count": image_count,
+        "total_positive_matches": total_pos_matches,
+        "total_negative_matches": total_neg_matches,
+        "mean_positive_matches_per_image": mean_pos,
+        "mean_negative_matches_per_image": mean_neg,
+        "sum_positive_count": sum_pos,
+        "sum_negative_count": sum_neg,
+        "total_connected_matches": total_con_matches,
+        "mean_connected_matches_per_image": mean_con
+    }
+
+
+# ######################
+
+
+def get_next_image_index(root: Path) -> int:
+    """
+    Scan IMAGE_ROOT for files named img_### and return next available number.
+    """
+    max_num = 0
+    for n in os.listdir(root):
+        m = re.match(r"img_(\d+)", Path(n).stem)
+        if m:
+            max_num = max(max_num, int(m.group(1)))
+    return max_num + 1
+
+
+def safe_extract_zip(zip_path: Path, extract_to: Path) -> List[Path]:
+    """
+    Extracts a ZIP file safely into extract_to directory, ignoring directories inside.
+    Returns list of extracted file paths.
+    """
+    extracted_files = []
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for member in zip_ref.infolist():
+            if member.is_dir():
+                continue
+            # Sanitize filename
+            filename = os.path.basename(member.filename)
+            if not filename:
+                continue
+            dest_path = extract_to / filename
+            with zip_ref.open(member) as src, open(dest_path, 'wb') as out_f:
+                shutil.copyfileobj(src, out_f)
+            extracted_files.append(dest_path)
+    return extracted_files
+
+
+def connect_all_images_in_graph(image_paths: List[str]):
+    """
+    Given a list of image paths (like /images/img_888.jpg),
+    ensure all exist as :Image nodes and fully connect them
+    with undirected :CONNECTED relationships.
+    """
+    if not image_paths or len(image_paths) < 2:
+        return
+
+    # Merge nodes first
+    run_query("""
+        UNWIND $paths AS p
+        MERGE (:Image {path: p})
+    """, {"paths": image_paths})
+
+    # Connect all pairs (undirected, only once)
+    run_query("""
+        UNWIND $paths AS p1
+        UNWIND $paths AS p2
+        WITH p1, p2
+        WHERE p1 < p2
+        MATCH (a:Image {path:p1}), (b:Image {path:p2})
+        MERGE (a)-[:POSITIVE]-(b)
+    """, {"paths": image_paths})
+
+
+
 @app.post("/api/upload_batch")
 async def upload_batch(file: UploadFile = File(...), user=Depends(verify_token)):
-    dest = BATCH_DIR / file.filename
+    """
+    Upload a labeled batch ZIP:
+      1. Save to /uploads/labeled/
+      2. Unzip into /images/
+      3. Rename extracted files as img_### starting after highest index
+      4. Create :Image nodes and fully connect them in Neo4j
+    """
+    dest_zip = BATCH_DIR / file.filename
     contents = await file.read()
-    with open(dest, "wb") as f:
+    with open(dest_zip, "wb") as f:
         f.write(contents)
-    return {"ok": True, "filename": file.filename}
 
-@app.post("/api/upload_non_labeled")
-async def upload_non_labeled(file: UploadFile = File(...), user=Depends(verify_token)):
-    dest = NON_LABELED_DIR / file.filename
-    contents = await file.read()
-    with open(dest, "wb") as f:
-        f.write(contents)
-    return {"ok": True, "filename": file.filename}
+    try:
+        # Step 1: Extract safely
+        extracted = safe_extract_zip(dest_zip, Path(IMAGE_ROOT))
+        if not extracted:
+            raise HTTPException(status_code=400, detail="No images found in zip")
+
+        # Step 2: Find next number in existing images
+        next_idx = get_next_image_index(Path(IMAGE_ROOT))
+
+        renamed_paths = []
+        for old_path in extracted:
+            ext = old_path.suffix.lower()
+            new_name = f"img_{next_idx:03d}{ext}"
+            new_path = Path(IMAGE_ROOT) / new_name
+            os.rename(old_path, new_path)
+            renamed_paths.append(f"/images/{new_name}")
+            next_idx += 1
+
+        # Step 3: Merge as :Image nodes and connect all
+        connect_all_images_in_graph(renamed_paths)
+
+        # Step 4: Refresh global image list (so UI gets updated)
+        global IMAGE_LIST
+        IMAGE_LIST = scan_images(IMAGE_ROOT)
+
+        return {
+            "ok": True,
+            "imported": len(renamed_paths),
+            "new_images": renamed_paths
+        }
+
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Invalid ZIP file")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+
+
