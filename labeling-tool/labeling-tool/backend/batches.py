@@ -5,10 +5,10 @@ BATCHES = [
     },
     {
         "queryImage": "/images/img_69.png",
-        "images": ["/images/img_70.png", "/images/img_71.png", "/images/1000.png"]
+        "images": ["/images/img_70.png", "/images/img_71.png", "/images/1000.png", "/images/img_999.png"]
     },
     {
-        "queryImage": "/images/img_72.png",
+        "queryImage": "/images/img_999.png",
         "images": ["/images/img_73.png", "/images/img_74.png", "/images/img_75.png", "/images/img_76.png"]
     },
     {
