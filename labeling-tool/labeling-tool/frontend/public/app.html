@@ -8,6 +8,7 @@
 .card.focus { box-shadow: 0 0 0 5px #3b82f6 inset; }
 .card.pos.focus { box-shadow: 0 0 0 5px #10b981 inset; }
 .card.neg.focus { box-shadow: 0 0 0 5px #ef4444 inset; }
+.card p { text-align: center; font-size: 7px; color: #cbd5e1; margin: 3px 0 0; }
 
 body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 0; background: #0f172a; color: #e2e8f0; }
 header { padding: 16px 24px; background: #111827; position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px; }
@@ -203,8 +204,18 @@ function initApp(){
   function card(urlRel,index){
     const d=document.createElement('div'); d.className='card';
     const img=document.createElement('img');
-    img.src=toAbsolute(urlRel); img.draggable=false;
-    d.appendChild(img);
+img.src=toAbsolute(urlRel);
+img.draggable=false;
+d.appendChild(img);
+
+const caption=document.createElement('p');
+caption.textContent = urlRel.split('/').pop(); // filename only
+caption.style.textAlign='center';
+caption.style.fontSize='9px';
+caption.style.opacity='0.8';
+caption.style.margin='0 0 0';
+d.appendChild(caption);
+
     attachBadgesForUrl(d, urlRel);
 
     d.addEventListener('click',()=>{
@@ -258,6 +269,19 @@ function initApp(){
 
       // set query image & badges
       queryImg.src=toAbsolute(queryRel);
+      // Show name under query image
+let nameEl = document.getElementById('queryName');
+if(!nameEl){
+  nameEl = document.createElement('p');
+  nameEl.id = 'queryName';
+  nameEl.style.textAlign='center';
+  nameEl.style.fontSize='14px';
+  nameEl.style.opacity='0.8';
+  nameEl.style.marginTop='8px';
+  queryImg.parentElement.after(nameEl);
+}
+nameEl.textContent = queryRel.split('/').pop();
+
       const qWrap = queryImg.parentElement;
       removeExistingBadges(qWrap);
       attachBadgesForUrl(qWrap, queryRel);

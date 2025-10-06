@@ -22,7 +22,8 @@ MATCH (n)
 DETACH DELETE n;
 ```
 
-
+run the code:
+- you may need vpn
 ```bash
 docker login
 
