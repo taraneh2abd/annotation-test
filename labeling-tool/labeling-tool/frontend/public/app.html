@@ -126,9 +126,19 @@ a { color: #93c5fd; }
 </head>
 <body>
 <header>
-  <h1>Image Labeling Tool</h1>
+  <button id="backBtn" style="
+    background:#1f2937;
+    color:#e5e7eb;
+    border:1px solid #334155;
+    padding:6px 10px;
+    border-radius:8px;
+    cursor:pointer;
+    font-size:14px;
+  ">← Menu</button>
+  <h1 style="margin-left:8px;">Image Labeling Tool</h1>
   <div class="status" id="status"></div>
 </header>
+
 
 <div class="container">
   <div class="layout">
@@ -441,6 +451,15 @@ nameEl.textContent = queryRel.split('/').pop();
       }
     }catch(err){ console.error(err); setStatus(err.message); }
   }
+
+  document.addEventListener("DOMContentLoaded", () => {
+  const backBtn = document.getElementById("backBtn");
+  if (backBtn) {
+    backBtn.addEventListener("click", () => {
+      window.location.href = "menu.html";
+    });
+  }
+});
 
   document.getElementById('nextBatch').addEventListener('click',()=>saveSelections(true));
   document.getElementById('prevBatch').addEventListener('click',()=>saveSelections(false).then(()=>{
