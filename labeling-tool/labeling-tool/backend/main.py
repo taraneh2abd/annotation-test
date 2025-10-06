@@ -45,6 +45,7 @@ app.add_middleware(
 # ---------------- Static Images ----------------
 Path(IMAGE_ROOT).mkdir(parents=True, exist_ok=True)
 app.mount("/images", StaticFiles(directory=IMAGE_ROOT), name="images")
+PENDING_NON_LABELED: List[str] = []
 
 # ---------------- Database ----------------
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
@@ -422,4 +423,70 @@ async def upload_batch(file: UploadFile = File(...), user=Depends(verify_token))
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
 
+@app.post("/api/upload_non_labeled")
+async def upload_non_labeled(file: UploadFile = File(...), user=Depends(verify_token)):
+    """
+    Upload a ZIP of non-labeled images:
+      1. Save to /uploads/non_labeled/
+      2. Unzip into /images/
+      3. Rename sequentially (img_###)
+      4. Do not connect in Neo4j yet
+      5. Keep list of new image paths in memory (PENDING_NON_LABELED)
+    """
+    dest_zip = NON_LABELED_DIR / file.filename
+    contents = await file.read()
+    with open(dest_zip, "wb") as f:
+        f.write(contents)
 
+    try:
+        # Step 1: Extract safely
+        extracted = safe_extract_zip(dest_zip, Path(IMAGE_ROOT))
+        if not extracted:
+            raise HTTPException(status_code=400, detail="No images found in zip")
+
+        # Step 2: Find next number in existing images
+        next_idx = get_next_image_index(Path(IMAGE_ROOT))
+
+        renamed_paths = []
+        for old_path in extracted:
+            ext = old_path.suffix.lower()
+            new_name = f"img_{next_idx:03d}{ext}"
+            new_path = Path(IMAGE_ROOT) / new_name
+            os.rename(old_path, new_path)
+            renamed_paths.append(f"/images/{new_name}")
+            next_idx += 1
+
+        # Step 3: Save pending list for later processing
+        global PENDING_NON_LABELED
+        PENDING_NON_LABELED.extend(renamed_paths)
+
+        # Step 4: Refresh global IMAGE_LIST (for /api/session)
+        global IMAGE_LIST
+        IMAGE_LIST = scan_images(IMAGE_ROOT)
+
+        return {
+            "ok": True,
+            "imported": len(renamed_paths),
+            "pending_to_process": len(PENDING_NON_LABELED),
+            "new_images": renamed_paths
+        }
+
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Invalid ZIP file")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+@app.post("/api/process_pending")
+def process_pending(user=Depends(verify_token)):
+    """
+    When the user presses 'Process new uploads':
+    Merge all pending unlabeled images as :Image nodes.
+    """
+    global PENDING_NON_LABELED
+    if not PENDING_NON_LABELED:
+        return {"ok": True, "message": "No pending images"}
+
+    merge_all_images_as_nodes([p.replace("/images/", "") for p in PENDING_NON_LABELED])
+    count = len(PENDING_NON_LABELED)
+    PENDING_NON_LABELED.clear()
+    return {"ok": True, "processed": count}
