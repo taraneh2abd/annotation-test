@@ -481,13 +481,14 @@ def process_pending(user=Depends(verify_token)):
     """
     Process pending unlabeled images:
       - Ensure they exist as :Image nodes
-      - For each pending image, pick 4 random candidates
+      - For each pending image, call retrieval.top_k_similar() to get candidates
       - Append or update entries in batches.py
       - Reload BATCHES in memory
-      - Raise clear error if batches.py not found
+      - Clear pending list
     """
-    import json, random, importlib, os
+    import json, importlib
     from pathlib import Path
+    import retrieval  # ✅ use retrieval instead of random
 
     global PENDING_NON_LABELED, BATCHES, IMAGE_LIST
 
@@ -515,28 +516,36 @@ def process_pending(user=Depends(verify_token)):
             "total_batches": len(getattr(batches_module, "BATCHES", [])),
         }
 
-    # --- Step 1: Make sure nodes exist ---
+    # --- Step 1: Make sure nodes exist in Neo4j ---
     merge_all_images_as_nodes([p.replace("/images/", "") for p in PENDING_NON_LABELED])
 
-    # --- Step 2: Refresh the image pool ---
+    # --- Step 2: Refresh the available image list ---
     IMAGE_LIST = scan_images(IMAGE_ROOT)
-    pool_web = [f"/images/{rel}" for rel in IMAGE_LIST]
+    all_web_paths = [f"/images/{rel}" for rel in IMAGE_LIST]
 
-    # --- Step 3: Create new entries ---
+    # --- Step 3: Build new batch entries using retrieval ---
     K = 4
     new_entries = []
     for web_q in PENDING_NON_LABELED:
-        candidates = [p for p in pool_web if p != web_q]
-        random.shuffle(candidates)
-        chosen = candidates[:K]
+        try:
+            candidates = retrieval.top_k_similar(web_q, all_web_paths, k=K, exclude_self=True)
+        except Exception as e:
+            # fallback if retrieval fails
+            print(f"[WARN] retrieval failed for {web_q}: {e}")
+            candidates = [p for p in all_web_paths if p != web_q][:K]
+
         new_entries.append({
             "queryImage": web_q,
-            "images": chosen
+            "images": candidates
         })
 
-    # --- Step 4: Append to batches.py ---
+    # --- Step 4: Append or update batches.py ---
     existing = list(getattr(batches_module, "BATCHES", []))
-    index_by_query = {e["queryImage"]: i for i, e in enumerate(existing) if isinstance(e, dict) and "queryImage" in e}
+    index_by_query = {
+        e["queryImage"]: i
+        for i, e in enumerate(existing)
+        if isinstance(e, dict) and "queryImage" in e
+    }
 
     added = 0
     for entry in new_entries:
@@ -556,7 +565,7 @@ def process_pending(user=Depends(verify_token)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write to batches.py: {e}")
 
-    # --- Step 5: Reload BATCHES in memory ---
+    # --- Step 5: Reload batches into memory ---
     try:
         importlib.invalidate_caches()
         importlib.reload(batches_module)
@@ -574,3 +583,4 @@ def process_pending(user=Depends(verify_token)):
         "total_batches": len(BATCHES),
         "batches_file": str(BATCH_FILE),
     }
+
