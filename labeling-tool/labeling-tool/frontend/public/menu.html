@@ -1,4 +1,3 @@
-<!-- menu.html -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -55,7 +54,7 @@ button {
   text-align:center; font-size:15px; transition:background .15s ease;
 }
 button:hover { background:#374151; }
-.row { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+.row { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; flex-direction:row; }
 .small { font-size:12px; color:var(--muted); margin-top:6px; }
 
 .sep { height:1px; background:var(--line); margin:14px 0; opacity:.7; }
@@ -67,6 +66,25 @@ button:hover { background:#374151; }
 .icon.red{ background:var(--red); }
 .icon.blue{ background:var(--blue); }
 .icon.amber{ background:var(--amber); }
+
+/* ✅ Loading bar under buttons */
+.loading-bar {
+  position: relative;
+  width: 260px;
+  height: 4px;
+  background: #1f2937;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 4px;
+  display: none;
+}
+.loading-bar span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  transition: width 0.3s ease;
+}
 </style>
 </head>
 <body>
@@ -111,15 +129,27 @@ button:hover { background:#374151; }
   <section class="panel">
     <div id="menu">
       <div class="row">
-        <button id="uploadBatchBtn">Upload non labeled images as ZIP</button>
-        <button id="uploadImagesBtn">Upload non labeled images as ZIP</button>
+        <div>
+          <button id="uploadBatchBtn">Upload labeled images as ZIP</button>
+          <div class="loading-bar" id="uploadBatchBar"><span></span></div>
+        </div>
+        <div>
+          <button id="uploadImagesBtn">Upload non labeled images as ZIP</button>
+          <div class="loading-bar" id="uploadImagesBar"><span></span></div>
+        </div>
       </div>
       <div class="row">
-        <button id="refreshStatsBtn">Process new uploads</button>
+        <div>
+          <button id="refreshStatsBtn">Process new uploads</button>
+          <div class="loading-bar" id="processBar"><span></span></div>
+        </div>
       </div>
       <div class="sep"></div>
       <div class="row">
-        <button id="labelingBtn">Labeling the query number…</button>
+        <div>
+          <button id="labelingBtn">Labeling the query number…</button>
+          <div class="loading-bar" id="labelBar"><span></span></div>
+        </div>
       </div>
     </div>
   </section>
@@ -133,12 +163,36 @@ if(!TOKEN){ window.location.href='index.html'; }
 const $ = sel => document.querySelector(sel);
 const fmt = (n) => {
   if(n===null || n===undefined || isNaN(n)) return '—';
-  // Pretty number formatting
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(n);
 };
 
 function setStatus(msg){ $('#status').textContent = msg || ''; }
 
+/* ✅ Simple green progress bar helpers */
+function startProgress(barId, duration = 4000) {
+  const bar = document.getElementById(barId);
+  if (!bar) return;
+  const fill = bar.querySelector('span');
+  bar.style.display = 'block';
+  fill.style.width = '0%';
+  let start = null;
+  function step(ts) {
+    if (!start) start = ts;
+    const p = Math.min((ts - start) / duration, 1);
+    fill.style.width = (p * 100).toFixed(1) + '%';
+    if (p < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+function endProgress(barId) {
+  const bar = document.getElementById(barId);
+  if (!bar) return;
+  const fill = bar.querySelector('span');
+  fill.style.width = '100%';
+  setTimeout(() => (bar.style.display = 'none'), 500);
+}
+
+/* ---------- Load Stats ---------- */
 async function loadStats(){
   setStatus('Loading stats…');
   try {
@@ -148,7 +202,6 @@ async function loadStats(){
     if(!res.ok) throw new Error('Failed to load stats');
     const data = await res.json();
 
-    // Update cards
     $('#statImages').textContent = fmt(data.image_count);
     $('#statPos').textContent = fmt(data.total_positive_matches);
     $('#statNeg').textContent = fmt(data.total_negative_matches);
@@ -167,47 +220,76 @@ async function loadStats(){
   }
 }
 
+/* ---------- Button Wiring ---------- */
 function wireUploads(){
-  // Batch ZIP upload
+  // Upload labeled
   $('#uploadBatchBtn').addEventListener('click', () => {
     const input = document.createElement('input');
     input.type = 'file'; input.accept = '.zip';
     input.onchange = async () => {
       const file = input.files[0]; if(!file) return;
+      startProgress('uploadBatchBar', 4000);
       const formData = new FormData(); formData.append('file', file);
-      const res = await fetch(`${API}/api/upload_batch`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${TOKEN}` },
-        body: formData
-      });
-      const data = await res.json();
-      alert(`Batch uploaded: ${data.filename || 'OK'}`);
-      loadStats(); // refresh counts if new images get scanned later
+      try {
+        const res = await fetch(`${API}/api/upload_batch`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${TOKEN}` },
+          body: formData
+        });
+        const data = await res.json();
+        alert(`Batch uploaded: ${data.filename || 'OK'}`);
+        loadStats();
+      } finally { endProgress('uploadBatchBar'); }
     };
     input.click();
   });
 
-  // Non-labeled ZIP upload
+  // Upload non-labeled
   $('#uploadImagesBtn').addEventListener('click', () => {
     const input = document.createElement('input');
     input.type = 'file'; input.accept = '.zip';
     input.onchange = async () => {
       const file = input.files[0]; if(!file) return;
+      startProgress('uploadImagesBar', 5000);
       const formData = new FormData(); formData.append('file', file);
-      const res = await fetch(`${API}/api/upload_non_labeled`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${TOKEN}` },
-        body: formData
-      });
-      const data = await res.json();
-      alert(`Non-labeled images uploaded: ${data.filename || 'OK'}`);
-      loadStats();
+      try {
+        const res = await fetch(`${API}/api/upload_non_labeled`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${TOKEN}` },
+          body: formData
+        });
+        const data = await res.json();
+        alert(`Non-labeled images uploaded: ${data.filename || 'OK'}`);
+        loadStats();
+      } finally { endProgress('uploadImagesBar'); }
     };
     input.click();
   });
 
-  // Go to labeling (ask for query number, convert to 0-based)
+  // Process pending
+  $('#refreshStatsBtn').addEventListener('click', async () => {
+    startProgress('processBar', 4000);
+    setStatus('Processing pending images…');
+    try {
+      const res = await fetch(`${API}/api/process_pending`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Processing failed');
+      alert(`Processed ${data.processed || 0} images → added ${data.batches_added || 0} new batches`);
+      setStatus(`Processed ${data.processed || 0} images ✓`);
+      loadStats();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to process pending uploads: ' + err.message);
+      setStatus('Failed to process pending uploads');
+    } finally { endProgress('processBar'); }
+  });
+
+  // Labeling
   $('#labelingBtn').addEventListener('click', () => {
+    startProgress('labelBar', 2000);
     let queryNum = prompt("Enter labeling query number (1-based):");
     if (queryNum) {
       const batchIndex = parseInt(queryNum, 10) - 1;
@@ -217,10 +299,8 @@ function wireUploads(){
         alert('Please enter a valid positive number.');
       }
     }
+    endProgress('labelBar');
   });
-
-  // Manual refresh
-  $('#refreshStatsBtn').addEventListener('click', loadStats);
 }
 
 // Boot

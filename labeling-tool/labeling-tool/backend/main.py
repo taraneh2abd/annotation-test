@@ -479,14 +479,98 @@ async def upload_non_labeled(file: UploadFile = File(...), user=Depends(verify_t
 @app.post("/api/process_pending")
 def process_pending(user=Depends(verify_token)):
     """
-    When the user presses 'Process new uploads':
-    Merge all pending unlabeled images as :Image nodes.
+    Process pending unlabeled images:
+      - Ensure they exist as :Image nodes
+      - For each pending image, pick 4 random candidates
+      - Append or update entries in batches.py
+      - Reload BATCHES in memory
+      - Raise clear error if batches.py not found
     """
-    global PENDING_NON_LABELED
-    if not PENDING_NON_LABELED:
-        return {"ok": True, "message": "No pending images"}
+    import json, random, importlib, os
+    from pathlib import Path
 
+    global PENDING_NON_LABELED, BATCHES, IMAGE_LIST
+
+    # --- Locate batches.py robustly ---
+    project_root = Path(__file__).resolve().parent
+    BATCH_FILE = project_root / "batches.py"
+
+    if not BATCH_FILE.exists():
+        raise HTTPException(status_code=500, detail=f"batches.py not found at {BATCH_FILE}")
+
+    # --- Import batches safely ---
+    try:
+        import batches as batches_module
+        importlib.invalidate_caches()
+        importlib.reload(batches_module)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to import batches.py: {e}")
+
+    if not PENDING_NON_LABELED:
+        return {
+            "ok": True,
+            "message": "No pending images",
+            "batches_file": str(BATCH_FILE),
+            "batches_added": 0,
+            "total_batches": len(getattr(batches_module, "BATCHES", [])),
+        }
+
+    # --- Step 1: Make sure nodes exist ---
     merge_all_images_as_nodes([p.replace("/images/", "") for p in PENDING_NON_LABELED])
-    count = len(PENDING_NON_LABELED)
+
+    # --- Step 2: Refresh the image pool ---
+    IMAGE_LIST = scan_images(IMAGE_ROOT)
+    pool_web = [f"/images/{rel}" for rel in IMAGE_LIST]
+
+    # --- Step 3: Create new entries ---
+    K = 4
+    new_entries = []
+    for web_q in PENDING_NON_LABELED:
+        candidates = [p for p in pool_web if p != web_q]
+        random.shuffle(candidates)
+        chosen = candidates[:K]
+        new_entries.append({
+            "queryImage": web_q,
+            "images": chosen
+        })
+
+    # --- Step 4: Append to batches.py ---
+    existing = list(getattr(batches_module, "BATCHES", []))
+    index_by_query = {e["queryImage"]: i for i, e in enumerate(existing) if isinstance(e, dict) and "queryImage" in e}
+
+    added = 0
+    for entry in new_entries:
+        q = entry["queryImage"]
+        if q in index_by_query:
+            existing[index_by_query[q]] = entry
+        else:
+            existing.append(entry)
+            index_by_query[q] = len(existing) - 1
+            added += 1
+
+    try:
+        with open(BATCH_FILE, "w", encoding="utf-8") as f:
+            f.write("BATCHES = ")
+            json.dump(existing, f, indent=2)
+            f.write("\n")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write to batches.py: {e}")
+
+    # --- Step 5: Reload BATCHES in memory ---
+    try:
+        importlib.invalidate_caches()
+        importlib.reload(batches_module)
+        BATCHES = batches_module.BATCHES
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload batches.py: {e}")
+
+    processed = len(PENDING_NON_LABELED)
     PENDING_NON_LABELED.clear()
-    return {"ok": True, "processed": count}
+
+    return {
+        "ok": True,
+        "processed": processed,
+        "batches_added": added,
+        "total_batches": len(BATCHES),
+        "batches_file": str(BATCH_FILE),
+    }
