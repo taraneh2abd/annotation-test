@@ -25,6 +25,7 @@ services:
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
+      - "C:\\Users\\T.Abdellahi\\.cache\\huggingface:/root/.cache/huggingface"
       - ./images:/data/images
       - ./backend/uploads:/data/uploads
       - ./backend:/app

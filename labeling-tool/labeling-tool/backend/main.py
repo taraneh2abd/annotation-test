@@ -478,109 +478,98 @@ async def upload_non_labeled(file: UploadFile = File(...), user=Depends(verify_t
 
 @app.post("/api/process_pending")
 def process_pending(user=Depends(verify_token)):
-    """
-    Process pending unlabeled images:
-      - Ensure they exist as :Image nodes
-      - For each pending image, call retrieval.top_k_similar() to get candidates
-      - Append or update entries in batches.py
-      - Reload BATCHES in memory
-      - Clear pending list
-    """
-    import json, importlib
+    import json, importlib, time, traceback
     from pathlib import Path
     import retrieval  # ✅ use retrieval instead of random
 
+    print("\n[PROCESS_PENDING] Starting pending processing...")
+    start_time = time.time()
+
     global PENDING_NON_LABELED, BATCHES, IMAGE_LIST
 
-    # --- Locate batches.py robustly ---
-    project_root = Path(__file__).resolve().parent
-    BATCH_FILE = project_root / "batches.py"
-
-    if not BATCH_FILE.exists():
-        raise HTTPException(status_code=500, detail=f"batches.py not found at {BATCH_FILE}")
-
-    # --- Import batches safely ---
     try:
+        project_root = Path(__file__).resolve().parent
+        BATCH_FILE = project_root / "batches.py"
+        print(f"[PROCESS_PENDING] Using batch file: {BATCH_FILE}")
+
+        if not BATCH_FILE.exists():
+            raise HTTPException(status_code=500, detail=f"batches.py not found at {BATCH_FILE}")
+
+        print(f"[PROCESS_PENDING] Pending count: {len(PENDING_NON_LABELED)}")
+
         import batches as batches_module
         importlib.invalidate_caches()
         importlib.reload(batches_module)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to import batches.py: {e}")
 
-    if not PENDING_NON_LABELED:
-        return {
-            "ok": True,
-            "message": "No pending images",
-            "batches_file": str(BATCH_FILE),
-            "batches_added": 0,
-            "total_batches": len(getattr(batches_module, "BATCHES", [])),
-        }
+        if not PENDING_NON_LABELED:
+            print("[PROCESS_PENDING] No pending images. Exiting early.")
+            return {"ok": True, "message": "No pending images"}
 
-    # --- Step 1: Make sure nodes exist in Neo4j ---
-    merge_all_images_as_nodes([p.replace("/images/", "") for p in PENDING_NON_LABELED])
+        # --- Step 1: Merge in Neo4j ---
+        print("[PROCESS_PENDING] Merging nodes in Neo4j...")
+        merge_all_images_as_nodes([p.replace("/images/", "") for p in PENDING_NON_LABELED])
 
-    # --- Step 2: Refresh the available image list ---
-    IMAGE_LIST = scan_images(IMAGE_ROOT)
-    all_web_paths = [f"/images/{rel}" for rel in IMAGE_LIST]
+        # --- Step 2: Refresh available images ---
+        IMAGE_LIST = scan_images(IMAGE_ROOT)
+        all_web_paths = [f"/images/{rel}" for rel in IMAGE_LIST]
+        print(f"[PROCESS_PENDING] Total available images: {len(all_web_paths)}")
 
-    # --- Step 3: Build new batch entries using retrieval ---
-    K = 4
-    new_entries = []
-    for web_q in PENDING_NON_LABELED:
-        try:
-            candidates = retrieval.top_k_similar(web_q, all_web_paths, k=K, exclude_self=True)
-        except Exception as e:
-            # fallback if retrieval fails
-            print(f"[WARN] retrieval failed for {web_q}: {e}")
-            candidates = [p for p in all_web_paths if p != web_q][:K]
+        # --- Step 3: Retrieval ---
+        K = 4
+        new_entries = []
+        for idx, web_q in enumerate(PENDING_NON_LABELED, 1):
+            print(f"[PROCESS_PENDING] [{idx}/{len(PENDING_NON_LABELED)}] Retrieving for {web_q}...")
+            try:
+                retrieved = retrieval.top_k_similar(web_q, all_web_paths, k=K)
+                candidates = [r["path"] for r in retrieved]
+                print(f"  ↳ got {len(candidates)} candidates")
+            except Exception as e:
+                print(f"[WARN] retrieval failed for {web_q}: {e}")
+                traceback.print_exc()
+                candidates = [p for p in all_web_paths if p != web_q][:K]
 
-        new_entries.append({
-            "queryImage": web_q,
-            "images": candidates
-        })
+            new_entries.append({"queryImage": web_q, "images": candidates})
 
-    # --- Step 4: Append or update batches.py ---
-    existing = list(getattr(batches_module, "BATCHES", []))
-    index_by_query = {
-        e["queryImage"]: i
-        for i, e in enumerate(existing)
-        if isinstance(e, dict) and "queryImage" in e
-    }
+        # --- Step 4: Write to batches.py ---
+        print(f"[PROCESS_PENDING] Writing {len(new_entries)} entries to batches.py")
+        existing = list(getattr(batches_module, "BATCHES", []))
+        index_by_query = {e["queryImage"]: i for i, e in enumerate(existing) if isinstance(e, dict)}
+        added = 0
+        for entry in new_entries:
+            q = entry["queryImage"]
+            if q in index_by_query:
+                existing[index_by_query[q]] = entry
+            else:
+                existing.append(entry)
+                added += 1
 
-    added = 0
-    for entry in new_entries:
-        q = entry["queryImage"]
-        if q in index_by_query:
-            existing[index_by_query[q]] = entry
-        else:
-            existing.append(entry)
-            index_by_query[q] = len(existing) - 1
-            added += 1
-
-    try:
         with open(BATCH_FILE, "w", encoding="utf-8") as f:
             f.write("BATCHES = ")
             json.dump(existing, f, indent=2)
             f.write("\n")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write to batches.py: {e}")
 
-    # --- Step 5: Reload batches into memory ---
-    try:
+        # --- Step 5: Reload batches ---
         importlib.invalidate_caches()
         importlib.reload(batches_module)
         BATCHES = batches_module.BATCHES
+        print(f"[PROCESS_PENDING] Reloaded batches: {len(BATCHES)} total")
+
+        processed = len(PENDING_NON_LABELED)
+        PENDING_NON_LABELED.clear()
+        took = round(time.time() - start_time, 2)
+        print(f"[PROCESS_PENDING] Done! processed={processed}, added={added}, took={took}s")
+
+        return {
+            "ok": True,
+            "processed": processed,
+            "batches_added": added,
+            "total_batches": len(BATCHES),
+            "batches_file": str(BATCH_FILE),
+            "took_seconds": took,
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to reload batches.py: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Process failed: {e}")
 
-    processed = len(PENDING_NON_LABELED)
-    PENDING_NON_LABELED.clear()
-
-    return {
-        "ok": True,
-        "processed": processed,
-        "batches_added": added,
-        "total_batches": len(BATCHES),
-        "batches_file": str(BATCH_FILE),
-    }
 
