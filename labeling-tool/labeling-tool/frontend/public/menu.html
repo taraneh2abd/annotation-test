@@ -18,12 +18,77 @@ body {
 }
 #wrap { width:min(960px, 95vw); margin:auto; }
 header {
+  margin-top: 40px;
   display:flex; align-items:center; justify-content:space-between;
   gap:12px; padding:16px 20px; background:var(--panel); border:1px solid var(--line);
   border-radius:14px; margin-bottom:16px;
 }
 header h2{ margin:0; font-size:18px; font-weight:700; }
 #status { font-size:13px; color:var(--muted); }
+/* 🟩🟥 New image stat cards */
+/* 🟩🟥 Image stats grid (10 per row, scrollable) */
+#imageStatsGrid {
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: repeat(10, 1fr); /* exactly 10 per row */
+  gap: 8px;
+  max-height: 500px; /* limit height */
+  overflow-y: auto;  /* scroll vertically when too many */
+  padding-right: 6px; /* small space for scrollbar */
+}
+
+#imageStatsCard {
+  margin-top: 24px;   /* 🆕 add space from the panel above */
+  margin-bottom: 40px; /* already there for bottom spacing */
+}
+
+.image-card {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  text-align: center;
+  padding: 6px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+  font-size: 11px;
+}
+
+.image-card .name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  word-break: break-word;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 80px;
+}
+
+.image-card .counts {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.image-card .pill.green {
+  background: var(--green);
+  color: white;
+  border: none;
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 6px;
+}
+.image-card .pill.red {
+  background: var(--red);
+  color: white;
+  border: none;
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 6px;
+}
 
 .stats {
   display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -150,6 +215,12 @@ button:hover { background:#374151; }
       </div>
     </div>
   </section>
+    <!-- 🧩 New small cards container -->
+  <section class="card" id="imageStatsCard">
+    <h4>ترتیب اولویت عکس ها</h4>
+    <div id="imageStatsGrid"></div>
+  </section>
+
 </div>
 
 <script>
@@ -211,6 +282,25 @@ async function loadStats(){
     const pending = data.pending_non_labeled_count ?? 0;
     const btn = document.getElementById('refreshStatsBtn');
     if (btn) btn.textContent = `Process new uploads (${pending})`;
+
+    // ✅ Render image stats grid
+const grid = document.getElementById('imageStatsGrid');
+if (grid) {
+  grid.innerHTML = '';
+  (data.image_stats_sorted || []).forEach(item => {
+    const name = item.path.split('/').pop();
+    const div = document.createElement('div');
+    div.className = 'image-card';
+    div.innerHTML = `
+      <div class="name">${name}</div>
+      <div class="counts">
+        <span class="pill green">${item.positive_count}</span>
+        <span class="pill red">${item.negative_count}</span>
+      </div>
+    `;
+    grid.appendChild(div);
+  });
+}
 
     setStatus('Stats updated ✓');
   } catch (e){

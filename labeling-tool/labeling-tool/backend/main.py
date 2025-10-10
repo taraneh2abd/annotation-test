@@ -101,6 +101,12 @@ class StatsBulkRequest(BaseModel):
 class StatsBulkResponse(BaseModel):
     stats: dict
 
+class ImageStatItem(BaseModel):
+    path: str
+    positive_count: int
+    negative_count: int
+    sort_key: int
+
 class ProjectStatsResponse(BaseModel):
     image_count: int
     total_positive_matches: float
@@ -111,7 +117,8 @@ class ProjectStatsResponse(BaseModel):
     sum_negative_count: int
     total_connected_matches: int
     mean_connected_matches_per_image: float
-    pending_non_labeled_count: int   # ✅ Add this line
+    pending_non_labeled_count: int
+    image_stats_sorted: List[ImageStatItem]   # ✅ new field
 
 
 # ---------------- Auth Endpoint ----------------
@@ -274,14 +281,12 @@ def image_stats_bulk(req: StatsBulkRequest, user=Depends(verify_token)):
 @app.get("/api/stats/summary", response_model=ProjectStatsResponse)
 def get_project_stats(user=Depends(verify_token)):
     """
-    Summaries to match prior app behavior + include CONNECTED relationships:
-      - sum_positive_count: count of POSITIVE relationships
-      - sum_negative_count: count of NEGATIVE relationships
-      - sum_connected_count: count of CONNECTED relationships
-      - means computed as totals / image_count
+    Summaries to match prior app behavior + include CONNECTED relationships + 
+    per-image positive/negative stats sorted by a custom key.
     """
     image_count = len(IMAGE_LIST) or 1
 
+    # --- Global aggregates ---
     res_pos = run_query("MATCH (:Image)-[:POSITIVE]->(:Image) RETURN count(*) as c")
     res_neg = run_query("MATCH (:Image)-[:NEGATIVE]->(:Image) RETURN count(*) as c")
     res_con = run_query("MATCH (:Image)-[:CONNECTED]-(:Image) RETURN count(*) as c")
@@ -290,7 +295,6 @@ def get_project_stats(user=Depends(verify_token)):
     sum_neg = res_neg[0]["c"] if res_neg else 0
     sum_con = res_con[0]["c"] if res_con else 0
 
-    # Preserve semantics
     total_pos_matches = sum_pos
     total_neg_matches = sum_neg
     total_con_matches = sum_con
@@ -301,8 +305,32 @@ def get_project_stats(user=Depends(verify_token)):
 
     global PENDING_NON_LABELED
     pending_count = len(PENDING_NON_LABELED)
-    print(pending_count)
-    # Extend return dict for front compatibility
+
+    # --- Per-image stats ---
+    rows = run_query("""
+        MATCH (i:Image)
+        OPTIONAL MATCH (i)-[p:POSITIVE]-()
+        WITH i, count(p) AS pos
+        OPTIONAL MATCH (i)-[n:NEGATIVE]-()
+        RETURN i.path AS path, pos, count(n) AS neg
+    """)
+
+    image_stats = []
+    for r in rows:
+        pos = r.get("pos", 0)
+        neg = r.get("neg", 0)
+        path = r.get("path")
+        sort_key = min(pos, neg) + (pos + neg)
+        image_stats.append({
+            "path": path,
+            "positive_count": pos,
+            "negative_count": neg,
+            "sort_key": sort_key
+        })
+
+    # sort ascending
+    image_stats.sort(key=lambda x: x["sort_key"])
+
     return {
         "image_count": image_count,
         "total_positive_matches": total_pos_matches,
@@ -313,7 +341,8 @@ def get_project_stats(user=Depends(verify_token)):
         "sum_negative_count": sum_neg,
         "total_connected_matches": total_con_matches,
         "mean_connected_matches_per_image": mean_con,
-        "pending_non_labeled_count": pending_count,   # 🆕 added field
+        "pending_non_labeled_count": pending_count,
+        "image_stats_sorted": image_stats,   # ✅ added field
     }
 
 
