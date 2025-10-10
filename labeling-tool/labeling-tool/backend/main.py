@@ -109,6 +109,10 @@ class ProjectStatsResponse(BaseModel):
     mean_negative_matches_per_image: float
     sum_positive_count: int
     sum_negative_count: int
+    total_connected_matches: int
+    mean_connected_matches_per_image: float
+    pending_non_labeled_count: int   # ✅ Add this line
+
 
 # ---------------- Auth Endpoint ----------------
 @app.post("/api/login", response_model=LoginResponse)
@@ -295,6 +299,9 @@ def get_project_stats(user=Depends(verify_token)):
     mean_neg = total_neg_matches / image_count
     mean_con = total_con_matches / image_count
 
+    global PENDING_NON_LABELED
+    pending_count = len(PENDING_NON_LABELED)
+    print(pending_count)
     # Extend return dict for front compatibility
     return {
         "image_count": image_count,
@@ -305,7 +312,8 @@ def get_project_stats(user=Depends(verify_token)):
         "sum_positive_count": sum_pos,
         "sum_negative_count": sum_neg,
         "total_connected_matches": total_con_matches,
-        "mean_connected_matches_per_image": mean_con
+        "mean_connected_matches_per_image": mean_con,
+        "pending_non_labeled_count": pending_count,   # 🆕 added field
     }
 
 
@@ -463,7 +471,7 @@ async def upload_non_labeled(file: UploadFile = File(...), user=Depends(verify_t
         # Step 4: Refresh global IMAGE_LIST (for /api/session)
         global IMAGE_LIST
         IMAGE_LIST = scan_images(IMAGE_ROOT)
-
+        print(len(PENDING_NON_LABELED))
         return {
             "ok": True,
             "imported": len(renamed_paths),

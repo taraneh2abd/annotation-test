@@ -67,7 +67,6 @@ button:hover { background:#374151; }
 .icon.blue{ background:var(--blue); }
 .icon.amber{ background:var(--amber); }
 
-/* ✅ Loading bar under buttons */
 .loading-bar {
   position: relative;
   width: 260px;
@@ -94,7 +93,6 @@ button:hover { background:#374151; }
     <div id="status">Loading stats…</div>
   </header>
 
-  <!-- Stats cards -->
   <section class="stats" id="statsGrid" aria-live="polite">
     <div class="card">
       <h4><span class="icon blue"></span>Total Images</h4>
@@ -125,7 +123,6 @@ button:hover { background:#374151; }
     </div>
   </section>
 
-  <!-- Actions -->
   <section class="panel">
     <div id="menu">
       <div class="row">
@@ -168,7 +165,6 @@ const fmt = (n) => {
 
 function setStatus(msg){ $('#status').textContent = msg || ''; }
 
-/* ✅ Simple green progress bar helpers */
 function startProgress(barId, duration = 4000) {
   const bar = document.getElementById(barId);
   if (!bar) return;
@@ -192,7 +188,6 @@ function endProgress(barId) {
   setTimeout(() => (bar.style.display = 'none'), 500);
 }
 
-/* ---------- Load Stats ---------- */
 async function loadStats(){
   setStatus('Loading stats…');
   try {
@@ -213,16 +208,18 @@ async function loadStats(){
       : (data.total_positive_matches > 0 ? Infinity : 0);
     $('#statRatio').textContent = (ratio === Infinity) ? '∞' : fmt(ratio);
 
-    setStatus('Stats up to date ✓');
+    const pending = data.pending_non_labeled_count ?? 0;
+    const btn = document.getElementById('refreshStatsBtn');
+    if (btn) btn.textContent = `Process new uploads (${pending})`;
+
+    setStatus('Stats updated ✓');
   } catch (e){
     console.error(e);
     setStatus('Failed to load stats');
   }
 }
 
-/* ---------- Button Wiring ---------- */
 function wireUploads(){
-  // Upload labeled
   $('#uploadBatchBtn').addEventListener('click', () => {
     const input = document.createElement('input');
     input.type = 'file'; input.accept = '.zip';
@@ -238,13 +235,12 @@ function wireUploads(){
         });
         const data = await res.json();
         alert(`Batch uploaded: ${data.filename || 'OK'}`);
-        loadStats();
+        await loadStats();
       } finally { endProgress('uploadBatchBar'); }
     };
     input.click();
   });
 
-  // Upload non-labeled
   $('#uploadImagesBtn').addEventListener('click', () => {
     const input = document.createElement('input');
     input.type = 'file'; input.accept = '.zip';
@@ -260,13 +256,12 @@ function wireUploads(){
         });
         const data = await res.json();
         alert(`Non-labeled images uploaded: ${data.filename || 'OK'}`);
-        loadStats();
+        await loadStats();
       } finally { endProgress('uploadImagesBar'); }
     };
     input.click();
   });
 
-  // Process pending
   $('#refreshStatsBtn').addEventListener('click', async () => {
     startProgress('processBar', 4000);
     setStatus('Processing pending images…');
@@ -279,7 +274,7 @@ function wireUploads(){
       if (!res.ok) throw new Error(data.detail || 'Processing failed');
       alert(`Processed ${data.processed || 0} images → added ${data.batches_added || 0} new batches`);
       setStatus(`Processed ${data.processed || 0} images ✓`);
-      loadStats();
+      await loadStats();
     } catch (err) {
       console.error(err);
       alert('Failed to process pending uploads: ' + err.message);
@@ -287,7 +282,6 @@ function wireUploads(){
     } finally { endProgress('processBar'); }
   });
 
-  // Labeling
   $('#labelingBtn').addEventListener('click', () => {
     startProgress('labelBar', 2000);
     let queryNum = prompt("Enter labeling query number (1-based):");
@@ -303,9 +297,14 @@ function wireUploads(){
   });
 }
 
-// Boot
-wireUploads();
-loadStats();
+document.addEventListener('DOMContentLoaded', () => {
+  wireUploads();
+  loadStats();
+});
+
+window.addEventListener('pageshow', (e) => {
+  if (e.persisted) loadStats();
+});
 </script>
 </body>
 </html>
