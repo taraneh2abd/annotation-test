@@ -43,6 +43,7 @@ header h2{ margin:0; font-size:18px; font-weight:700; }
 }
 
 .image-card {
+  transition: transform 0.1s ease, background 0.1s ease;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -54,6 +55,11 @@ header h2{ margin:0; font-size:18px; font-weight:700; }
   justify-content: center;
   min-height: 60px;
   font-size: 11px;
+}
+.image-card:hover {
+  transform: scale(1.04);
+  background: var(--panel);
+  cursor: pointer;
 }
 
 .image-card .name {
@@ -298,6 +304,37 @@ if (grid) {
         <span class="pill red">${item.negative_count}</span>
       </div>
     `;
+    // 🧩 make image card clickable
+div.style.cursor = 'pointer';
+div.addEventListener('click', async () => {
+  try {
+    const res = await fetch(`${API}/api/get_batch_index_by_query`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ queryImage: item.path })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Not found');
+    // ✅ redirect to labeling page with found index
+// ✅ redirect with positive/negative info if available
+if (data.ok && typeof data.index === "number") {
+  const url = new URL(`app.html`, window.location.origin);
+  url.searchParams.set("query", data.index);
+  if (data.positives?.length) url.searchParams.set("positives", JSON.stringify(data.positives));
+  if (data.negatives?.length) url.searchParams.set("negatives", JSON.stringify(data.negatives));
+  window.location.href = url.toString();
+} else {
+  alert('No batch found or created for this image.');
+}
+
+  } catch (err) {
+    alert('❌ Failed to open labeling for this image: ' + err.message);
+  }
+});
+
     grid.appendChild(div);
   });
 }

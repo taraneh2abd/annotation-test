@@ -320,7 +320,7 @@ def get_project_stats(user=Depends(verify_token)):
         pos = r.get("pos", 0)
         neg = r.get("neg", 0)
         path = r.get("path")
-        sort_key = min(pos, neg) + (pos + neg)
+        sort_key = min(pos, neg) + (pos + neg) + pos
         image_stats.append({
             "path": path,
             "positive_count": pos,
@@ -610,3 +610,100 @@ def process_pending(user=Depends(verify_token)):
         raise HTTPException(status_code=500, detail=f"Process failed: {e}")
 
 
+@app.post("/api/get_batch_index_by_query")
+def get_batch_index_by_query(body: dict, user=Depends(verify_token)):
+    """
+    Given a query image path (e.g. '/images/img_012.jpg'):
+      1. If it exists in BATCHES, return its index.
+      2. Otherwise, generate a new batch dynamically using retrieval.
+      3. If generated, save it into batches.py and return the new index.
+      4. Also include any existing POSITIVE/NEGATIVE labels for that query.
+    """
+    import importlib, json, traceback
+    from pathlib import Path
+    import retrieval
+
+    query_path = body.get("queryImage")
+    if not query_path:
+        raise HTTPException(status_code=400, detail="Missing queryImage")
+
+    # ✅ Step 1: Check if already exists in batches
+    for idx, entry in enumerate(BATCHES):
+        if isinstance(entry, dict) and entry.get("queryImage") == query_path:
+            # Get existing relationships
+            pos = [r["path"] for r in run_query("""
+                MATCH (:Image {path:$q})-[:POSITIVE]->(i:Image) RETURN i.path as path
+            """, {"q": query_path})]
+            neg = [r["path"] for r in run_query("""
+                MATCH (:Image {path:$q})-[:NEGATIVE]->(i:Image) RETURN i.path as path
+            """, {"q": query_path})]
+
+            return {
+                "ok": True,
+                "index": idx,
+                "queryImage": query_path,
+                "positives": pos,
+                "negatives": neg,
+                "new_batch_created": False
+            }
+
+    # ✅ Step 2: If not found, dynamically create a new batch
+    print(f"[DYNAMIC_BATCH] Query image not in batches, creating new batch for {query_path}")
+    try:
+        all_images = scan_images(IMAGE_ROOT)
+        all_web_paths = [f"/images/{rel}" for rel in all_images]
+
+        # Run retrieval for top K similar images
+        K = 4
+        retrieved = retrieval.top_k_similar(query_path, all_web_paths, k=K)
+        candidates = [r["path"] for r in retrieved if r["path"] != query_path]
+
+        # Ensure nodes exist
+        merge_all_images_as_nodes([query_path] + candidates)
+
+        # ✅ Step 3: Check for existing label edges
+        pos_edges = [r["path"] for r in run_query("""
+            MATCH (:Image {path:$q})-[:POSITIVE]->(i:Image) RETURN i.path as path
+        """, {"q": query_path})]
+        neg_edges = [r["path"] for r in run_query("""
+            MATCH (:Image {path:$q})-[:NEGATIVE]->(i:Image) RETURN i.path as path
+        """, {"q": query_path})]
+
+        # ✅ Step 4: Append to batches.py and memory
+        new_entry = {
+            "queryImage": query_path,
+            "images": candidates
+        }
+
+        project_root = Path(__file__).resolve().parent
+        BATCH_FILE = project_root / "batches.py"
+
+        existing = list(getattr(importlib.import_module("batches"), "BATCHES", []))
+        existing.append(new_entry)
+
+        with open(BATCH_FILE, "w", encoding="utf-8") as f:
+            f.write("BATCHES = ")
+            json.dump(existing, f, indent=2)
+            f.write("\n")
+
+        importlib.invalidate_caches()
+        import batches as batches_module
+        importlib.reload(batches_module)
+        globals()["BATCHES"] = batches_module.BATCHES
+
+        new_index = len(BATCHES) - 1
+        print(f"[DYNAMIC_BATCH] Added new batch #{new_index} for {query_path}")
+
+        return {
+            "ok": True,
+            "index": new_index,
+            "queryImage": query_path,
+            "positives": pos_edges,
+            "negatives": neg_edges,
+            "new_batch_created": True,
+            "retrieved_candidates": candidates
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to dynamically create batch: {e}")
